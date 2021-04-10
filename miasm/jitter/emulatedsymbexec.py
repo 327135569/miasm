@@ -1,6 +1,7 @@
 from miasm.core.utils import decode_hex, encode_hex
 import miasm.expression.expression as m2_expr
 from miasm.ir.symbexec import SymbolicExecutionEngine
+from miasm.arch.x86.arch import is_op_segm
 
 
 class EmulatedSymbExec(SymbolicExecutionEngine):
@@ -62,7 +63,7 @@ class EmulatedSymbExec(SymbolicExecutionEngine):
 
     def reset_regs(self):
         """Set registers value to 0. Ignore register aliases"""
-        for reg in self.ir_arch.arch.regs.all_regs_ids_no_alias:
+        for reg in self.lifter.arch.regs.all_regs_ids_no_alias:
             self.symbols.symbols_id[reg] = m2_expr.ExprInt(0, size=reg.size)
 
     # Memory management
@@ -140,7 +141,7 @@ class EmulatedSymbExec(SymbolicExecutionEngine):
     # CPU specific simplifications
     def _simp_handle_segm(self, e_s, expr):
         """Handle 'segm' operation"""
-        if not m2_expr.is_op_segm(expr):
+        if not is_op_segm(expr):
             return expr
         if not expr.args[0].is_int():
             return expr

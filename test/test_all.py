@@ -305,7 +305,8 @@ testset += SemanticTestExec("x86_32", "PE", 0x401000, ["bsr_bsf"],
                             depends=[test_x86_32_bsr_bsf])
 
 ## Core
-for script in ["interval.py",
+for script in ["modint.py",
+               "interval.py",
                "graph.py",
                "parse_asm.py",
                "utils.py",
@@ -318,8 +319,7 @@ testset += RegressionTest(["asmblock.py"], base_dir="core",
                           products=["graph.dot", "graph2.dot",
                                     "graph3.dot", "graph4.dot"])
 ## Expression
-for script in ["modint.py",
-               "expression.py",
+for script in ["expression.py",
                "stp.py",
                "simplifications.py",
                "expression_helper.py",
@@ -329,6 +329,10 @@ for script in ["modint.py",
                ]:
     testset += RegressionTest([script], base_dir="expression")
 testset += RegressionTest(["simplifications.py", "--z3"],
+                          base_dir="expression",
+                          tags=[TAGS["z3"]])
+
+testset += RegressionTest(["z3_div.py"],
                           base_dir="expression",
                           tags=[TAGS["z3"]])
 
@@ -597,10 +601,10 @@ for script, prods, depends in [
         (["dis_x86_string.py"], ["str_cfg.dot"], []),
         (["dis_binary.py", Example.get_sample("test_x86_32_dis.bin"),
         ], ["bin_cfg.dot"], [test_x86_32_dis]),
-        (["dis_binary_ir.py", Example.get_sample("test_x86_32_dis.bin"),
+        (["dis_binary_lift.py", Example.get_sample("test_x86_32_dis.bin"),
         ], ["bin_ir_cfg.dot"], [test_x86_32_dis]),
-        (["dis_binary_ira.py", Example.get_sample("test_x86_32_dis.bin"),
-        ], ["bin_ira_cfg.dot"], [test_x86_32_dis]),
+        (["dis_binary_lift_model_call.py", Example.get_sample("test_x86_32_dis.bin"),
+        ], ["bin_lifter_model_call_cfg.dot"], [test_x86_32_dis]),
         (["full.py", Example.get_sample("box_upx.exe")],
          ["graph_execflow.dot", "lines.dot"], []),
 ]:

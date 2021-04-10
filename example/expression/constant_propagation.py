@@ -12,6 +12,8 @@ from miasm.analysis.cst_propag import propagate_cst_expr
 from miasm.analysis.data_flow import DeadRemoval, \
     merge_blocks, remove_empty_assignblks
 from miasm.expression.simplifications import expr_simp
+from miasm.core.locationdb import LocationDB
+
 
 
 parser = ArgumentParser("Constant expression propagation")
@@ -25,18 +27,19 @@ args = parser.parse_args()
 
 machine = Machine("x86_32")
 
-cont = Container.from_stream(open(args.filename, 'rb'))
-mdis = machine.dis_engine(cont.bin_stream, loc_db=cont.loc_db)
-ir_arch = machine.ira(mdis.loc_db)
+loc_db = LocationDB()
+cont = Container.from_stream(open(args.filename, 'rb'), loc_db)
+mdis = machine.dis_engine(cont.bin_stream, loc_db=loc_db)
+lifter = machine.lifter_model_call(mdis.loc_db)
 addr = int(args.address, 0)
-deadrm = DeadRemoval(ir_arch)
+deadrm = DeadRemoval(lifter)
 
 asmcfg = mdis.dis_multiblock(addr)
-ircfg = ir_arch.new_ircfg_from_asmcfg(asmcfg)
+ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
 entry_points = set([mdis.loc_db.get_offset_location(addr)])
 
-init_infos = ir_arch.arch.regs.regs_init
-cst_propag_link = propagate_cst_expr(ir_arch, ircfg, addr, init_infos)
+init_infos = lifter.arch.regs.regs_init
+cst_propag_link = propagate_cst_expr(lifter, ircfg, addr, init_infos)
 
 if args.simplify:
     ircfg.simplify(expr_simp)

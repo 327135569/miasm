@@ -271,8 +271,8 @@ class DeadRemoval(object):
     Do dead removal
     """
 
-    def __init__(self, ir_arch, expr_to_original_expr=None):
-        self.ir_arch = ir_arch
+    def __init__(self, lifter, expr_to_original_expr=None):
+        self.lifter = lifter
         if expr_to_original_expr is None:
             expr_to_original_expr = {}
         self.expr_to_original_expr = expr_to_original_expr
@@ -284,7 +284,7 @@ class DeadRemoval(object):
     def is_unkillable_destination(self, lval, rval):
         if (
                 lval.is_mem() or
-                self.ir_arch.IRDst == lval or
+                self.lifter.IRDst == lval or
                 lval.is_id("exception_flags") or
                 is_function_call(rval)
         ):
@@ -348,7 +348,7 @@ class DeadRemoval(object):
         Find definitions of out regs starting from @block
         """
         worklist = set()
-        for reg in self.ir_arch.get_out_regs(block):
+        for reg in self.lifter.get_out_regs(block):
             worklist.add((reg, block.loc_key))
         ret = self.find_definitions_from_worklist(worklist, ircfg)
         return ret
@@ -428,7 +428,7 @@ class DeadRemoval(object):
         Source : Kennedy, K. (1979). A survey of data flow analysis techniques.
         IBM Thomas J. Watson Research Division, page 43
 
-        @ircfg: IntermediateRepresentation instance
+        @ircfg: Lifter instance
         """
 
         modified = False
@@ -445,7 +445,7 @@ class DeadRemoval(object):
                         del new_assignblk[lval]
                         modified = True
                 irs.append(AssignBlock(new_assignblk, assignblk.instr))
-            ircfg.blocks[block.loc_key] = IRBlock(block.loc_key, irs)
+            ircfg.blocks[block.loc_key] = IRBlock(block.loc_db, block.loc_key, irs)
         return modified
 
     def __call__(self, ircfg):
@@ -496,7 +496,7 @@ def _do_merge_blocks(ircfg, loc_key, son_loc_key):
             assignblks.append(AssignBlock(affs, assignblk.instr))
 
     assignblks += ircfg.blocks[son_loc_key].assignblks
-    new_block = IRBlock(loc_key, assignblks)
+    new_block = IRBlock(ircfg.loc_db, loc_key, assignblks)
 
     ircfg.discard_edge(loc_key, son_loc_key)
 
@@ -622,7 +622,7 @@ def _remove_to_parent(ircfg, loc_key, son_loc_key):
     ircfg.del_edge(loc_key, son_loc_key)
 
     old_irblock = ircfg.blocks[son_loc_key]
-    new_irblock = IRBlock(loc_key, old_irblock.assignblks)
+    new_irblock = IRBlock(ircfg.loc_db, loc_key, old_irblock.assignblks)
 
     ircfg.blocks[son_loc_key] = new_irblock
 
@@ -715,7 +715,7 @@ def remove_empty_assignblks(ircfg):
             else:
                 block_modified = True
         if block_modified:
-            new_irblock = IRBlock(loc_key, irs)
+            new_irblock = IRBlock(ircfg.loc_db, loc_key, irs)
             ircfg.blocks[loc_key] = new_irblock
             modified = True
     return modified
@@ -801,7 +801,7 @@ def expr_has_mem(expr):
 def stack_to_reg(expr):
     if expr.is_mem():
         ptr = expr.arg
-        SP = ir_arch_a.sp
+        SP = lifter.sp
         if ptr == SP:
             return ExprId("STACK.0", expr.size)
         elif (ptr.is_op('+') and
@@ -815,26 +815,26 @@ def stack_to_reg(expr):
     return False
 
 
-def is_stack_access(ir_arch_a, expr):
+def is_stack_access(lifter, expr):
     if not expr.is_mem():
         return False
     ptr = expr.ptr
-    diff = expr_simp(ptr - ir_arch_a.sp)
+    diff = expr_simp(ptr - lifter.sp)
     if not diff.is_int():
         return False
     return expr
 
 
-def visitor_get_stack_accesses(ir_arch_a, expr, stack_vars):
-    if is_stack_access(ir_arch_a, expr):
+def visitor_get_stack_accesses(lifter, expr, stack_vars):
+    if is_stack_access(lifter, expr):
         stack_vars.add(expr)
     return expr
 
 
-def get_stack_accesses(ir_arch_a, expr):
+def get_stack_accesses(lifter, expr):
     result = set()
     def get_stack(expr_to_test):
-        visitor_get_stack_accesses(ir_arch_a, expr_to_test, result)
+        visitor_get_stack_accesses(lifter, expr_to_test, result)
         return None
     visitor = ExprWalk(get_stack)
     visitor.visit(expr)
@@ -848,14 +848,14 @@ def get_interval_length(interval_in):
     return length
 
 
-def check_expr_below_stack(ir_arch_a, expr):
+def check_expr_below_stack(lifter, expr):
     """
     Return False if expr pointer is below original stack pointer
-    @ir_arch_a: ira instance
+    @lifter: lifter_model_call instance
     @expr: Expression instance
     """
     ptr = expr.ptr
-    diff = expr_simp(ptr - ir_arch_a.sp)
+    diff = expr_simp(ptr - lifter.sp)
     if not diff.is_int():
         return True
     if int(diff) == 0 or int(expr_simp(diff.msb())) == 0:
@@ -863,20 +863,20 @@ def check_expr_below_stack(ir_arch_a, expr):
     return True
 
 
-def retrieve_stack_accesses(ir_arch_a, ircfg):
+def retrieve_stack_accesses(lifter, ircfg):
     """
     Walk the ssa graph and find stack based variables.
     Return a dictionary linking stack base address to its size/name
-    @ir_arch_a: ira instance
+    @lifter: lifter_model_call instance
     @ircfg: IRCFG instance
     """
     stack_vars = set()
     for block in viewvalues(ircfg.blocks):
         for assignblk in block:
             for dst, src in viewitems(assignblk):
-                stack_vars.update(get_stack_accesses(ir_arch_a, dst))
-                stack_vars.update(get_stack_accesses(ir_arch_a, src))
-    stack_vars = [expr for expr in stack_vars if check_expr_below_stack(ir_arch_a, expr)]
+                stack_vars.update(get_stack_accesses(lifter, dst))
+                stack_vars.update(get_stack_accesses(lifter, src))
+    stack_vars = [expr for expr in stack_vars if check_expr_below_stack(lifter, expr)]
 
     base_to_var = {}
     for var in stack_vars:
@@ -887,7 +887,7 @@ def retrieve_stack_accesses(ir_arch_a, ircfg):
     for addr, vars in viewitems(base_to_var):
         var_interval = interval()
         for var in vars:
-            offset = expr_simp(addr - ir_arch_a.sp)
+            offset = expr_simp(addr - lifter.sp)
             if not offset.is_int():
                 # skip non linear stack offset
                 continue
@@ -937,7 +937,7 @@ def replace_mem_stack_vars(expr, base_to_info):
     return expr.visit(lambda expr:fix_stack_vars(expr, base_to_info))
 
 
-def replace_stack_vars(ir_arch_a, ircfg):
+def replace_stack_vars(lifter, ircfg):
     """
     Try to replace stack based memory accesses by variables.
 
@@ -947,11 +947,11 @@ def replace_stack_vars(ir_arch_a, ircfg):
 
     WARNING: may fail
 
-    @ir_arch_a: ira instance
+    @lifter: lifter_model_call instance
     @ircfg: IRCFG instance
     """
 
-    base_to_info = retrieve_stack_accesses(ir_arch_a, ircfg)
+    base_to_info = retrieve_stack_accesses(lifter, ircfg)
     modified = False
     for block in list(viewvalues(ircfg.blocks)):
         assignblks = []
@@ -967,7 +967,7 @@ def replace_stack_vars(ir_arch_a, ircfg):
 
             out = AssignBlock(out, assignblk.instr)
             assignblks.append(out)
-        new_block = IRBlock(block.loc_key, assignblks)
+        new_block = IRBlock(block.loc_db, block.loc_key, assignblks)
         ircfg.blocks[block.loc_key] = new_block
     return modified
 
@@ -1004,16 +1004,16 @@ def read_mem(bs, expr):
     return ExprInt(value, expr.size)
 
 
-def load_from_int(ir_arch, bs, is_addr_ro_variable):
+def load_from_int(ircfg, bs, is_addr_ro_variable):
     """
     Replace memory read based on constant with static value
-    @ir_arch: ira instance
+    @ircfg: IRCFG instance
     @bs: binstream instance
     @is_addr_ro_variable: callback(addr, size) to test memory candidate
     """
 
     modified = False
-    for block in list(viewvalues(ir_arch.blocks)):
+    for block in list(viewvalues(ircfg.blocks)):
         assignblks = list()
         for assignblk in block:
             out = {}
@@ -1045,8 +1045,8 @@ def load_from_int(ir_arch, bs, is_addr_ro_variable):
                 out[dst] = src_new
             out = AssignBlock(out, assignblk.instr)
             assignblks.append(out)
-        block = IRBlock(block.loc_key, assignblks)
-        ir_arch.blocks[block.loc_key] = block
+        block = IRBlock(block.loc_db, block.loc_key, assignblks)
+        ircfg.blocks[block.loc_key] = block
     return modified
 
 
@@ -1120,10 +1120,10 @@ class DiGraphLiveness(DiGraph):
     DiGraph representing variable liveness
     """
 
-    def __init__(self, ircfg, loc_db=None):
+    def __init__(self, ircfg):
         super(DiGraphLiveness, self).__init__()
         self.ircfg = ircfg
-        self.loc_db = loc_db
+        self.loc_db = ircfg.loc_db
         self._blocks = {}
         # Add irblocks gen/kill
         for node in ircfg.nodes():
@@ -1150,14 +1150,11 @@ class DiGraphLiveness(DiGraph):
         """
         Output liveness information in dot format
         """
-        if self.loc_db is None:
-            node_name = str(node)
+        names = self.loc_db.get_location_names(node)
+        if not names:
+            node_name = self.loc_db.pretty_str(node)
         else:
-            names = self.loc_db.get_location_names(node)
-            if not names:
-                node_name = self.loc_db.pretty_str(node)
-            else:
-                node_name = "".join("%s:\n" % name for name in names)
+            node_name = "".join("%s:\n" % name for name in names)
         yield self.DotCellDescription(
             text="%s" % node_name,
             attr={
@@ -1249,14 +1246,14 @@ class DiGraphLivenessIRA(DiGraphLiveness):
     DiGraph representing variable liveness for IRA
     """
 
-    def init_var_info(self, ir_arch_a):
+    def init_var_info(self, lifter):
         """Add ircfg out regs"""
 
         for node in self.leaves():
             irblock = self.ircfg.blocks.get(node, None)
             if irblock is None:
                 continue
-            var_out = ir_arch_a.get_out_regs(irblock)
+            var_out = lifter.get_out_regs(irblock)
             irblock_liveness = self.blocks[node]
             irblock_liveness.infos[-1].var_out = var_out
 
@@ -1291,7 +1288,7 @@ def discard_phi_sources(ircfg, deleted_vars):
         assignblk.update(todo)
         assignblk = AssignBlock(assignblk, assignblks[0].instr)
         assignblks[0] = assignblk
-        new_irblock = IRBlock(block.loc_key, assignblks)
+        new_irblock = IRBlock(block.loc_db, block.loc_key, assignblks)
         ircfg.blocks[block.loc_key] = new_irblock
     return True
 
@@ -1370,7 +1367,7 @@ def update_phi_with_deleted_edges(ircfg, edges_to_del):
                 out[dst] = ExprOp('Phi', *to_keep)
         assignblk = AssignBlock(out, assignblks[0].instr)
         assignblks[0] = assignblk
-        new_irblock = IRBlock(loc_dst, assignblks)
+        new_irblock = IRBlock(block.loc_db, loc_dst, assignblks)
         blocks[block.loc_key] = new_irblock
 
     for loc_key, block in viewitems(blocks):
@@ -1513,44 +1510,170 @@ def get_phi_sources(phi_src, phi_dsts, ids_to_src):
 class DelDummyPhi(object):
     """
     Del dummy phi
+    Find nodes which are in the same equivalence class and replace phi nodes by
+    the class representative.
     """
+
+    def src_gen_phi_node_srcs(self, equivalence_graph):
+        for node in equivalence_graph.nodes():
+            if not node.is_op("Phi"):
+                continue
+            phi_successors = equivalence_graph.successors(node)
+            for head in phi_successors:
+                # Walk from head to find if we have a phi merging node
+                known = set([node])
+                todo = set([head])
+                done = set()
+                while todo:
+                    node = todo.pop()
+                    if node in done:
+                        continue
+
+                    known.add(node)
+                    is_ok = True
+                    for parent in equivalence_graph.predecessors(node):
+                        if parent not in known:
+                            is_ok = False
+                            break
+                    if not is_ok:
+                        continue
+                    if node.is_op("Phi"):
+                        successors = equivalence_graph.successors(node)
+                        phi_node = successors.pop()
+                        return set([phi_node]), phi_node, head, equivalence_graph
+                    done.add(node)
+                    for successor in equivalence_graph.successors(node):
+                        todo.add(successor)
+        return None
+
+    def get_equivalence_class(self, node, ids_to_src):
+        todo = set([node])
+        done = set()
+        defined = set()
+        equivalence = set()
+        src_to_dst = {}
+        equivalence_graph = DiGraph()
+        while todo:
+            dst = todo.pop()
+            if dst in done:
+                continue
+            done.add(dst)
+            equivalence.add(dst)
+            src = ids_to_src.get(dst)
+            if src is None:
+                # Node is not defined
+                continue
+            src_to_dst[src] = dst
+            defined.add(dst)
+            if src.is_id():
+                equivalence_graph.add_uniq_edge(src, dst)
+                todo.add(src)
+            elif src.is_op('Phi'):
+                equivalence_graph.add_uniq_edge(src, dst)
+                for arg in src.args:
+                    assert arg.is_id()
+                    equivalence_graph.add_uniq_edge(arg, src)
+                    todo.add(arg)
+            else:
+                if src.is_mem() or (src.is_op() and src.op.startswith("call")):
+                    if src in equivalence_graph.nodes():
+                        return None
+                equivalence_graph.add_uniq_edge(src, dst)
+                equivalence.add(src)
+
+        if len(equivalence_graph.heads()) == 0:
+            raise RuntimeError("Inconsistent graph")
+        elif len(equivalence_graph.heads()) == 1:
+            # Every nodes in the equivalence graph may be equivalent to the root
+            head = equivalence_graph.heads().pop()
+            successors = equivalence_graph.successors(head)
+            if len(successors) == 1:
+                # If successor is an id
+                successor = successors.pop()
+                if successor.is_id():
+                    nodes = equivalence_graph.nodes()
+                    nodes.discard(head)
+                    nodes.discard(successor)
+                    nodes = [node for node in nodes if node.is_id()]
+                    return nodes, successor, head, equivalence_graph
+            else:
+                # Walk from head to find if we have a phi merging node
+                known = set()
+                todo = set([head])
+                done = set()
+                while todo:
+                    node = todo.pop()
+                    if node in done:
+                        continue
+                    known.add(node)
+                    is_ok = True
+                    for parent in equivalence_graph.predecessors(node):
+                        if parent not in known:
+                            is_ok = False
+                            break
+                    if not is_ok:
+                        continue
+                    if node.is_op("Phi"):
+                        successors = equivalence_graph.successors(node)
+                        assert len(successors) == 1
+                        phi_node = successors.pop()
+                        return set([phi_node]), phi_node, head, equivalence_graph
+                    done.add(node)
+                    for successor in equivalence_graph.successors(node):
+                        todo.add(successor)
+
+        return self.src_gen_phi_node_srcs(equivalence_graph)
 
     def del_dummy_phi(self, ssa, head):
         ids_to_src = {}
+        def_to_loc = {}
         for block in viewvalues(ssa.graph.blocks):
             for index, assignblock in enumerate(block):
                 for dst, src in viewitems(assignblock):
                     if not dst.is_id():
                         continue
                     ids_to_src[dst] = src
+                    def_to_loc[dst] = block.loc_key
+
 
         modified = False
-        for block in ssa.graph.blocks.values():
+        for loc_key in ssa.graph.blocks.keys():
+            block = ssa.graph.blocks[loc_key]
             if not irblock_has_phi(block):
                 continue
             assignblk = block[0]
-            modified_assignblk = False
             for dst, phi_src in viewitems(assignblk):
                 assert phi_src.is_op('Phi')
-                true_value = get_phi_sources(phi_src, set([dst]), ids_to_src)
-                if true_value is False:
+                result = self.get_equivalence_class(dst, ids_to_src)
+                if result is None:
                     continue
+                defined, node, true_value, equivalence_graph = result
                 if expr_has_mem(true_value):
+                    # Don't propagate ExprMem
                     continue
-                fixed_phis = {}
-                for old_dst, old_phi_src in viewitems(assignblk):
-                    if old_dst == dst:
-                        continue
-                    fixed_phis[old_dst] = old_phi_src
+                if true_value.is_op() and true_value.op.startswith("call"):
+                    # Don't propagate call
+                    continue
+                # We have an equivalence of nodes
+                to_del = set(defined)
+                # Remove all implicated phis
+                for dst in to_del:
+                    loc_key = def_to_loc[dst]
+                    block = ssa.graph.blocks[loc_key]
 
+                    assignblk = block[0]
+                    fixed_phis = {}
+                    for old_dst, old_phi_src in viewitems(assignblk):
+                        if old_dst in defined:
+                            continue
+                        fixed_phis[old_dst] = old_phi_src
+
+                    assignblks = list(block)
+                    assignblks[0] = AssignBlock(fixed_phis, assignblk.instr)
+                    assignblks[1:1] = [AssignBlock({dst: true_value}, assignblk.instr)]
+                    new_irblock = IRBlock(block.loc_db, block.loc_key, assignblks)
+                    ssa.graph.blocks[loc_key] = new_irblock
                 modified = True
-
-                assignblks = list(block)
-                assignblks[0] = AssignBlock(fixed_phis, assignblk.instr)
-                assignblks[1:1] = [AssignBlock({dst: true_value}, assignblk.instr)]
-                new_irblock = IRBlock(block.loc_key, assignblks)
-                ssa.graph.blocks[block.loc_key] = new_irblock
-
         return modified
 
 
@@ -1619,7 +1742,6 @@ class UnionFind(object):
         Replace the @old_node by the @new_node
         """
         classes = self.get_classes()
-        node_to_class = dict(self.node_to_class)
 
         new_classes = []
         replace_dct = {old_node:new_node}
@@ -1815,6 +1937,9 @@ class State(object):
     def __init__(self):
         self.equivalence_classes = UnionFind()
         self.undefined = set()
+
+    def __str__(self):
+        return "{0.equivalence_classes}\n{0.undefined}".format(self)
 
     def copy(self):
         state = self.__class__()
@@ -2029,10 +2154,6 @@ class State(object):
             if not self.propagation_allowed(src):
                 continue
 
-            ## Dont create equivalence if dependence on undef
-            if dst.is_mem() and self.may_interfer(self.undefined, dst.ptr):
-                continue
-
             self.undefined.discard(dst)
             if dst in self.equivalence_classes.nodes():
                 self.equivalence_classes.del_element(dst)
@@ -2044,6 +2165,9 @@ class State(object):
     def merge(self, other):
         """
         Merge the current state with @other
+        Merge rules:
+        - if two nodes are equal in both states => in equivalence class
+        - if node value is different or non present in another state => undefined
         @other: State instance
         """
         classes1 = self.equivalence_classes
@@ -2061,11 +2185,11 @@ class State(object):
             for node in component:
                 node_to_component2[node] = component
 
+        # Compute intersection of equivalence classes of states
         out = []
         nodes_ok = set()
         while components1:
             component1 = components1.pop()
-            new_component1 = set()
             for node in component1:
                 if node in undefined:
                     continue
@@ -2077,14 +2201,18 @@ class State(object):
                     continue
                 if node not in component2:
                     continue
+                # Found two classes containing node
                 common = component1.intersection(component2)
                 if len(common) == 1:
+                    # Intersection contains only one node => undefine node
                     if node.is_id() or node.is_mem():
                         assert(node not in nodes_ok)
                         undefined.add(node)
                         component2.discard(common.pop())
                     continue
                 if common:
+                    # Intersection contains multiple nodes
+                    # Here, common nodes don't interfer with any undefined
                     nodes_ok.update(common)
                     out.append(common)
                 diff = component1.difference(common)
@@ -2165,7 +2293,7 @@ class PropagateExpressions(object):
         """
         Merge predecessors states of irblock at location @loc_key
         @ircfg: IRCfg instance
-        @sates: Dictionary linking locations to state
+        @states: Dictionary linking locations to state
         @loc_key: location of the current irblock
         """
 
@@ -2202,7 +2330,7 @@ class PropagateExpressions(object):
         new_assignblocks = []
         modified = False
 
-        for index, assignblock in enumerate(irblock):
+        for assignblock in irblock:
             if not assignblock.items():
                 continue
             new_assignblk = state.eval_assignblock(assignblock)
@@ -2210,7 +2338,7 @@ class PropagateExpressions(object):
             if new_assignblk != assignblock:
                 modified = True
 
-        new_irblock = IRBlock(irblock.loc_key, new_assignblocks)
+        new_irblock = IRBlock(irblock.loc_db, irblock.loc_key, new_assignblocks)
 
         return new_irblock, modified
 
@@ -2237,15 +2365,14 @@ class PropagateExpressions(object):
             state = state.copy()
 
             new_irblock, modified_irblock = self.update_state(irblock, state)
-            if (
-                    state_orig is not None and
-                    state.equivalence_classes == state_orig.equivalence_classes and
+            if state_orig is not None:
+                # Merge current and previous state
+                state = state.merge(state_orig)
+                if (state.equivalence_classes == state_orig.equivalence_classes and
                     state.undefined == state_orig.undefined
-            ):
-                continue
+                    ):
+                    continue
 
-            if state_orig:
-                state.undefined.update(state_orig.undefined)
             states[loc_key] = state
             # Propagate to sons
             for successor in ircfg.successors(loc_key):

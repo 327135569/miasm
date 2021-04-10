@@ -15,6 +15,7 @@ from miasm.ir.symbexec import SymbolicExecutionEngine, get_block
 from miasm.expression.simplifications import expr_simp
 from miasm.core import parse_asm
 from miasm.ir.translators.translator  import Translator
+from miasm.core.locationdb import LocationDB
 
 machine = Machine("x86_32")
 
@@ -29,7 +30,7 @@ if not args:
     sys.exit(0)
 
 
-def emul_symb(ir_arch, ircfg, mdis, states_todo, states_done):
+def emul_symb(lifter, ircfg, mdis, states_todo, states_done):
     while states_todo:
         addr, symbols, conds = states_todo.pop()
         print('*' * 40, "addr", addr, '*' * 40)
@@ -37,11 +38,11 @@ def emul_symb(ir_arch, ircfg, mdis, states_todo, states_done):
             print('Known state, skipping', addr)
             continue
         states_done.add((addr, symbols, conds))
-        symbexec = SymbolicExecutionEngine(ir_arch)
+        symbexec = SymbolicExecutionEngine(lifter)
         symbexec.symbols = symbols.copy()
-        if ir_arch.pc in symbexec.symbols:
-            del symbexec.symbols[ir_arch.pc]
-        irblock = get_block(ir_arch, ircfg, mdis, addr)
+        if lifter.pc in symbexec.symbols:
+            del symbexec.symbols[lifter.pc]
+        irblock = get_block(lifter, ircfg, mdis, addr)
 
         print('Run block:')
         print(irblock)
@@ -79,24 +80,26 @@ def emul_symb(ir_arch, ircfg, mdis, states_todo, states_done):
 
 
 if __name__ == '__main__':
-
+    loc_db = LocationDB()
     translator_smt2 = Translator.to_language("smt2")
 
     addr = int(options.address, 16)
 
-    cont = Container.from_stream(open(args[0], 'rb'))
-    mdis = machine.dis_engine(cont.bin_stream, loc_db=cont.loc_db)
-    ir_arch = machine.ir(mdis.loc_db)
-    ircfg = ir_arch.new_ircfg()
-    symbexec = SymbolicExecutionEngine(ir_arch)
+    cont = Container.from_stream(open(args[0], 'rb'), loc_db)
+    mdis = machine.dis_engine(cont.bin_stream, loc_db=loc_db)
+    lifter = machine.lifter(mdis.loc_db)
+    ircfg = lifter.new_ircfg()
+    symbexec = SymbolicExecutionEngine(lifter)
 
-    asmcfg, loc_db = parse_asm.parse_txt(machine.mn, 32, '''
+    asmcfg = parse_asm.parse_txt(
+        machine.mn, 32, '''
     init:
     PUSH argv
     PUSH argc
     PUSH ret_addr
     ''',
-    loc_db=mdis.loc_db)
+        loc_db
+    )
 
 
     argc_lbl = loc_db.get_name_location('argc')
@@ -126,19 +129,19 @@ if __name__ == '__main__':
     print(block)
 
     # add fake address and len to parsed instructions
-    ir_arch.add_asmblock_to_ircfg(block, ircfg)
+    lifter.add_asmblock_to_ircfg(block, ircfg)
     irb = ircfg.blocks[init_lbl]
     symbexec.eval_updt_irblock(irb)
     symbexec.dump(ids=False)
-    # reset ir_arch blocks
-    ir_arch.blocks = {}
+    # reset lifter blocks
+    lifter.blocks = {}
 
     states_todo = set()
     states_done = set()
     states_todo.add((addr, symbexec.symbols, ()))
 
     # emul blocks, propagate states
-    emul_symb(ir_arch, ircfg, mdis, states_todo, states_done)
+    emul_symb(lifter, ircfg, mdis, states_todo, states_done)
 
     all_info = []
 
@@ -153,7 +156,7 @@ if __name__ == '__main__':
 
     all_cases = set()
 
-    symbexec = SymbolicExecutionEngine(ir_arch)
+    symbexec = SymbolicExecutionEngine(lifter)
     for addr, reqs_cond in all_info:
         out = ['(set-logic QF_ABV)',
                '(set-info :smt-lib-version 2.0)']

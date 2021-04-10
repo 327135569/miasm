@@ -2,7 +2,7 @@ from builtins import range
 from future.utils import viewitems, viewvalues
 
 from miasm.expression.expression import *
-from miasm.ir.ir import IntermediateRepresentation, IRBlock, AssignBlock
+from miasm.ir.ir import Lifter, IRBlock, AssignBlock
 from miasm.arch.arm.arch import mn_arm, mn_armt
 from miasm.arch.arm.regs import *
 
@@ -803,7 +803,7 @@ def sdiv(ir, instr, a, b, c=None):
     do_except = []
     do_except.append(ExprAssign(exception_flags, ExprInt(EXCEPT_DIV_BY_ZERO, exception_flags.size)))
     do_except.append(ExprAssign(ir.IRDst, loc_next))
-    blk_except = IRBlock(loc_except.loc_key, [AssignBlock(do_except, instr)])
+    blk_except = IRBlock(ir.loc_db, loc_except.loc_key, [AssignBlock(do_except, instr)])
 
 
 
@@ -815,7 +815,7 @@ def sdiv(ir, instr, a, b, c=None):
         do_div.append(ExprAssign(ir.IRDst, r))
 
     do_div.append(ExprAssign(ir.IRDst, loc_next))
-    blk_div = IRBlock(loc_div.loc_key, [AssignBlock(do_div, instr)])
+    blk_div = IRBlock(ir.loc_db, loc_div.loc_key, [AssignBlock(do_div, instr)])
 
     return e, [blk_div, blk_except]
 
@@ -836,7 +836,7 @@ def udiv(ir, instr, a, b, c=None):
     do_except = []
     do_except.append(ExprAssign(exception_flags, ExprInt(EXCEPT_DIV_BY_ZERO, exception_flags.size)))
     do_except.append(ExprAssign(ir.IRDst, loc_next))
-    blk_except = IRBlock(loc_except.loc_key, [AssignBlock(do_except, instr)])
+    blk_except = IRBlock(ir.loc_db, loc_except.loc_key, [AssignBlock(do_except, instr)])
 
 
     r = ExprOp("udiv", b, c)
@@ -847,7 +847,7 @@ def udiv(ir, instr, a, b, c=None):
         do_div.append(ExprAssign(ir.IRDst, r))
 
     do_div.append(ExprAssign(ir.IRDst, loc_next))
-    blk_div = IRBlock(loc_div.loc_key, [AssignBlock(do_div, instr)])
+    blk_div = IRBlock(ir.loc_db, loc_div.loc_key, [AssignBlock(do_div, instr)])
 
     return e, [blk_div, blk_except]
 
@@ -1750,7 +1750,7 @@ def add_condition_expr(ir, instr, cond, instr_ir, extra_ir):
             break
     if not has_irdst:
         instr_ir.append(ExprAssign(ir.IRDst, loc_next_expr))
-    e_do = IRBlock(loc_do, [AssignBlock(instr_ir, instr)])
+    e_do = IRBlock(ir.loc_db, loc_do, [AssignBlock(instr_ir, instr)])
     e = [ExprAssign(ir.IRDst, dst_cond)]
     return e, [e_do] + extra_ir
 
@@ -1965,9 +1965,9 @@ class arminfo(object):
     # offset
 
 
-class ir_arml(IntermediateRepresentation):
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_arm, "l", loc_db)
+class Lifter_Arml(Lifter):
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_arm, "l", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 32)
@@ -2037,7 +2037,7 @@ class ir_arml(IntermediateRepresentation):
         dst = ExprAssign(self.IRDst, ExprLoc(loc_next, 32))
         dst_blk = AssignBlock([dst], instr)
         assignments.append(dst_blk)
-        irblock = IRBlock(loc, assignments)
+        irblock = IRBlock(self.loc_db, loc, assignments)
         ir_blocks_all.append([irblock])
 
         loc = loc_next
@@ -2058,7 +2058,7 @@ class ir_arml(IntermediateRepresentation):
             dst = ExprAssign(self.IRDst, ExprCond(local_cond, ExprLoc(loc_do, 32), ExprLoc(loc_next, 32)))
             dst_blk = AssignBlock([dst], instr)
             assignments.append(dst_blk)
-            irblock = IRBlock(loc, assignments)
+            irblock = IRBlock(self.loc_db, loc, assignments)
 
             irblocks.append(irblock)
 
@@ -2103,7 +2103,7 @@ class ir_arml(IntermediateRepresentation):
                             assignment.instr
                         )
                         out.append(assignment)
-                    new_irblock = IRBlock(irblock.loc_key, out)
+                    new_irblock = IRBlock(self.loc_db, irblock.loc_key, out)
                     new_irblocks.append(new_irblock)
                 it_instr_irblocks = new_irblocks
 
@@ -2111,7 +2111,7 @@ class ir_arml(IntermediateRepresentation):
             dst = ExprAssign(self.IRDst, ExprLoc(loc_next, 32))
             dst_blk = AssignBlock([dst], instr)
             assignments.append(dst_blk)
-            irblock = IRBlock(loc, assignments)
+            irblock = IRBlock(self.loc_db, loc, assignments)
             irblocks.append(irblock)
             loc = loc_next
             assignments = []
@@ -2149,11 +2149,11 @@ class ir_arml(IntermediateRepresentation):
                 ir_blocks_all, gen_pc_updt
             )
             if split:
-                ir_blocks_all.append(IRBlock(label, assignments))
+                ir_blocks_all.append(IRBlock(self.loc_db, label, assignments))
                 label = None
                 assignments = []
         if label is not None:
-            ir_blocks_all.append(IRBlock(label, assignments))
+            ir_blocks_all.append(IRBlock(self.loc_db, label, assignments))
 
         new_ir_blocks_all = self.post_add_asmblock_to_ircfg(block, ircfg, ir_blocks_all)
         for irblock in new_ir_blocks_all:
@@ -2162,18 +2162,18 @@ class ir_arml(IntermediateRepresentation):
 
 
 
-class ir_armb(ir_arml):
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_arm, "b", loc_db)
+class Lifter_Armb(Lifter_Arml):
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_arm, "b", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 32)
         self.addrsize = 32
 
 
-class ir_armtl(ir_arml):
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_armt, "l", loc_db)
+class Lifter_Armtl(Lifter_Arml):
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_armt, "l", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 32)
@@ -2197,9 +2197,9 @@ class ir_armtl(ir_arml):
                                                  lambda expr: expr.replace_expr(pc_fixed))
 
 
-class ir_armtb(ir_armtl):
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_armt, "b", loc_db)
+class Lifter_Armtb(Lifter_Armtl):
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_armt, "b", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 32)

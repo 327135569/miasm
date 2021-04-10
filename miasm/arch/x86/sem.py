@@ -24,8 +24,8 @@ import logging
 import miasm.expression.expression as m2_expr
 from miasm.expression.simplifications import expr_simp
 from miasm.arch.x86.regs import *
-from miasm.arch.x86.arch import mn_x86, repeat_mn, replace_regs
-from miasm.ir.ir import IntermediateRepresentation, IRBlock, AssignBlock
+from miasm.arch.x86.arch import mn_x86, repeat_mn, replace_regs, is_mem_segm
+from miasm.ir.ir import Lifter, IRBlock, AssignBlock
 from miasm.core.sembuilder import SemBuilder
 from miasm.jitter.csts import EXCEPT_DIV_BY_ZERO, EXCEPT_ILLEGAL_INSN, \
     EXCEPT_PRIV_INSN, EXCEPT_SOFT_BP, EXCEPT_INT_XX, EXCEPT_INT_1, \
@@ -386,7 +386,7 @@ def gen_fcmov(ir, instr, cond, arg1, arg2, mov_if):
     e_do, extra_irs = [m2_expr.ExprAssign(arg1, arg2)], []
     e_do.append(m2_expr.ExprAssign(ir.IRDst, loc_skip_expr))
     e.append(m2_expr.ExprAssign(ir.IRDst, m2_expr.ExprCond(cond, dstA, dstB)))
-    return e, [IRBlock(loc_do, [AssignBlock(e_do, instr)])]
+    return e, [IRBlock(ir.loc_db, loc_do, [AssignBlock(e_do, instr)])]
 
 
 def gen_cmov(ir, instr, cond, dst, src, mov_if):
@@ -403,12 +403,17 @@ def gen_cmov(ir, instr, cond, dst, src, mov_if):
         dstA, dstB = loc_do_expr, loc_skip_expr
     else:
         dstA, dstB = loc_skip_expr, loc_do_expr
-    e = [m2_expr.ExprAssign(dst, dst)]
+    e = []
+    if instr.mode == 64:
+        # Force destination set in order to zero high bit orders
+        # In 64 bit:
+        # cmovz eax, ebx
+        # if zf == 0 => high part of RAX is set to zero
+        e.append(m2_expr.ExprAssign(dst, dst))
     e_do, extra_irs = mov(ir, instr, dst, src)
     e_do.append(m2_expr.ExprAssign(ir.IRDst, loc_skip_expr))
     e.append(m2_expr.ExprAssign(ir.IRDst, m2_expr.ExprCond(cond, dstA, dstB)))
-    e += set_float_cs_eip(instr)
-    return e, [IRBlock(loc_do, [AssignBlock(e_do, instr)])]
+    return e, [IRBlock(ir.loc_db, loc_do, [AssignBlock(e_do, instr)])]
 
 
 def mov(_, instr, dst, src):
@@ -446,7 +451,7 @@ def movsx(_, instr, dst, src):
 
 def lea(_, instr, dst, src):
     ptr = src.ptr
-    if src.is_mem_segm():
+    if is_mem_segm(src):
         # Do not use segmentation here
         ptr = ptr.args[1]
 
@@ -642,7 +647,13 @@ def _rotate_tpl(ir, instr, dst, src, op, left=False):
             m2_expr.ExprAssign(of, new_of),
             m2_expr.ExprAssign(dst, res)
             ]
-    e = [m2_expr.ExprAssign(dst, dst)]
+    e = []
+    if instr.mode == 64:
+        # Force destination set in order to zero high bit orders
+        # In 64 bit:
+        # rol eax, cl
+        # if cl == 0 => high part of RAX is set to zero
+        e.append(m2_expr.ExprAssign(dst, dst))
     # Don't generate conditional shifter on constant
     if isinstance(shifter, m2_expr.ExprInt):
         if int(shifter) != 0:
@@ -655,7 +666,7 @@ def _rotate_tpl(ir, instr, dst, src, op, left=False):
     e_do.append(m2_expr.ExprAssign(ir.IRDst, loc_skip_expr))
     e.append(m2_expr.ExprAssign(
         ir.IRDst, m2_expr.ExprCond(shifter, loc_do_expr, loc_skip_expr)))
-    return (e, [IRBlock(loc_do, [AssignBlock(e_do, instr)])])
+    return (e, [IRBlock(ir.loc_db, loc_do, [AssignBlock(e_do, instr)])])
 
 
 def l_rol(ir, instr, dst, src):
@@ -703,7 +714,7 @@ def rotate_with_carry_tpl(ir, instr, op, dst, src):
     e_do.append(m2_expr.ExprAssign(ir.IRDst, loc_skip_expr))
     e.append(m2_expr.ExprAssign(
         ir.IRDst, m2_expr.ExprCond(shifter, loc_do_expr, loc_skip_expr)))
-    return (e, [IRBlock(loc_do, [AssignBlock(e_do, instr)])])
+    return (e, [IRBlock(ir.loc_db, loc_do, [AssignBlock(e_do, instr)])])
 
 def rcl(ir, instr, dst, src):
     return rotate_with_carry_tpl(ir, instr, '<<<', dst, src)
@@ -776,7 +787,13 @@ def _shift_tpl(op, ir, instr, a, b, c=None, op_inv=None, left=False,
         m2_expr.ExprAssign(a, res),
     ]
     e_do += update_flag_znp(res)
-    e = [m2_expr.ExprAssign(a, a)]
+    e = []
+    if instr.mode == 64:
+        # Force destination set in order to zero high bit orders
+        # In 64 bit:
+        # shr eax, cl
+        # if cl == 0 => high part of RAX is set to zero
+        e.append(m2_expr.ExprAssign(a, a))
     # Don't generate conditional shifter on constant
     if isinstance(shifter, m2_expr.ExprInt):
         if int(shifter) != 0:
@@ -789,7 +806,7 @@ def _shift_tpl(op, ir, instr, a, b, c=None, op_inv=None, left=False,
     e_do.append(m2_expr.ExprAssign(ir.IRDst, loc_skip_expr))
     e.append(m2_expr.ExprAssign(ir.IRDst, m2_expr.ExprCond(shifter, loc_do_expr,
                                                         loc_skip_expr)))
-    return e, [IRBlock(loc_do, [AssignBlock(e_do, instr)])]
+    return e, [IRBlock(ir.loc_db, loc_do, [AssignBlock(e_do, instr)])]
 
 
 def sar(ir, instr, dst, src):
@@ -1206,13 +1223,13 @@ def cmps(ir, instr, size):
     e0.append(m2_expr.ExprAssign(src1, src1 + offset))
     e0.append(m2_expr.ExprAssign(src2, src2 + offset))
     e0.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e0 = IRBlock(loc_df_0, [AssignBlock(e0, instr)])
+    e0 = IRBlock(ir.loc_db, loc_df_0, [AssignBlock(e0, instr)])
 
     e1 = []
     e1.append(m2_expr.ExprAssign(src1, src1 - offset))
     e1.append(m2_expr.ExprAssign(src2, src2 - offset))
     e1.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e1 = IRBlock(loc_df_1, [AssignBlock(e1, instr)])
+    e1 = IRBlock(ir.loc_db, loc_df_1, [AssignBlock(e1, instr)])
 
     e.append(m2_expr.ExprAssign(ir.IRDst,
                              m2_expr.ExprCond(df, loc_df_1_expr, loc_df_0_expr)))
@@ -1243,12 +1260,12 @@ def scas(ir, instr, size):
     e0.append(m2_expr.ExprAssign(src, src + offset))
 
     e0.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e0 = IRBlock(loc_df_0, [AssignBlock(e0, instr)])
+    e0 = IRBlock(ir.loc_db, loc_df_0, [AssignBlock(e0, instr)])
 
     e1 = []
     e1.append(m2_expr.ExprAssign(src, src - offset))
     e1.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e1 = IRBlock(loc_df_1, [AssignBlock(e1, instr)])
+    e1 = IRBlock(ir.loc_db, loc_df_1, [AssignBlock(e1, instr)])
 
     e.append(m2_expr.ExprAssign(ir.IRDst,
                              m2_expr.ExprCond(df, loc_df_1_expr, loc_df_0_expr)))
@@ -1733,13 +1750,13 @@ def div(ir, instr, src1):
     do_div = []
     do_div += e
     do_div.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    blk_div = IRBlock(loc_div, [AssignBlock(do_div, instr)])
+    blk_div = IRBlock(ir.loc_db, loc_div, [AssignBlock(do_div, instr)])
 
     do_except = []
     do_except.append(m2_expr.ExprAssign(exception_flags, m2_expr.ExprInt(
         EXCEPT_DIV_BY_ZERO, exception_flags.size)))
     do_except.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    blk_except = IRBlock(loc_except, [AssignBlock(do_except, instr)])
+    blk_except = IRBlock(ir.loc_db, loc_except, [AssignBlock(do_except, instr)])
 
     e = []
     e.append(m2_expr.ExprAssign(ir.IRDst,
@@ -1780,13 +1797,13 @@ def idiv(ir, instr, src1):
     do_div = []
     do_div += e
     do_div.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    blk_div = IRBlock(loc_div, [AssignBlock(do_div, instr)])
+    blk_div = IRBlock(ir.loc_db, loc_div, [AssignBlock(do_div, instr)])
 
     do_except = []
     do_except.append(m2_expr.ExprAssign(exception_flags, m2_expr.ExprInt(
         EXCEPT_DIV_BY_ZERO, exception_flags.size)))
     do_except.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    blk_except = IRBlock(loc_except, [AssignBlock(do_except, instr)])
+    blk_except = IRBlock(ir.loc_db, loc_except, [AssignBlock(do_except, instr)])
 
     e = []
     e.append(m2_expr.ExprAssign(ir.IRDst,
@@ -1952,12 +1969,12 @@ def stos(ir, instr, size):
     e0 = []
     e0.append(m2_expr.ExprAssign(addr_o, addr_p))
     e0.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e0 = IRBlock(loc_df_0, [AssignBlock(e0, instr)])
+    e0 = IRBlock(ir.loc_db, loc_df_0, [AssignBlock(e0, instr)])
 
     e1 = []
     e1.append(m2_expr.ExprAssign(addr_o, addr_m))
     e1.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e1 = IRBlock(loc_df_1, [AssignBlock(e1, instr)])
+    e1 = IRBlock(ir.loc_db, loc_df_1, [AssignBlock(e1, instr)])
 
     e = []
     e.append(m2_expr.ExprAssign(ir.ExprMem(addr, size), b))
@@ -1988,12 +2005,12 @@ def lods(ir, instr, size):
     e0 = []
     e0.append(m2_expr.ExprAssign(addr_o, addr_p))
     e0.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e0 = IRBlock(loc_df_0, [AssignBlock(e0, instr)])
+    e0 = IRBlock(ir.loc_db, loc_df_0, [AssignBlock(e0, instr)])
 
     e1 = []
     e1.append(m2_expr.ExprAssign(addr_o, addr_m))
     e1.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e1 = IRBlock(loc_df_1, [AssignBlock(e1, instr)])
+    e1 = IRBlock(ir.loc_db, loc_df_1, [AssignBlock(e1, instr)])
 
     e = []
     if instr.mode == 64 and b.size == 32:
@@ -2035,13 +2052,13 @@ def movs(ir, instr, size):
     e0.append(m2_expr.ExprAssign(src, src + offset))
     e0.append(m2_expr.ExprAssign(dst, dst + offset))
     e0.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e0 = IRBlock(loc_df_0, [AssignBlock(e0, instr)])
+    e0 = IRBlock(ir.loc_db, loc_df_0, [AssignBlock(e0, instr)])
 
     e1 = []
     e1.append(m2_expr.ExprAssign(src, src - offset))
     e1.append(m2_expr.ExprAssign(dst, dst - offset))
     e1.append(m2_expr.ExprAssign(ir.IRDst, loc_next_expr))
-    e1 = IRBlock(loc_df_1, [AssignBlock(e1, instr)])
+    e1 = IRBlock(ir.loc_db, loc_df_1, [AssignBlock(e1, instr)])
 
     e.append(m2_expr.ExprAssign(ir.IRDst,
                              m2_expr.ExprCond(df, loc_df_1_expr, loc_df_0_expr)))
@@ -2198,31 +2215,31 @@ def fxam(ir, instr):
     base += set_float_cs_eip(instr)
 
     out = [
-        IRBlock(locs["Zero"][0], [AssignBlock({
+        IRBlock(ir.loc_db, locs["Zero"][0], [AssignBlock({
             float_c0: m2_expr.ExprInt(0, float_c0.size),
             float_c2: m2_expr.ExprInt(0, float_c2.size),
             float_c3: m2_expr.ExprInt(1, float_c3.size),
             ir.IRDst: loc_next_expr,
         }, instr)]),
-        IRBlock(locs["Denormal"][0], [AssignBlock({
+        IRBlock(ir.loc_db, locs["Denormal"][0], [AssignBlock({
             float_c0: m2_expr.ExprInt(0, float_c0.size),
             float_c2: m2_expr.ExprInt(1, float_c2.size),
             float_c3: m2_expr.ExprInt(1, float_c3.size),
             ir.IRDst: loc_next_expr,
         }, instr)]),
-        IRBlock(locs["NaN"][0], [AssignBlock({
+        IRBlock(ir.loc_db, locs["NaN"][0], [AssignBlock({
             float_c0: m2_expr.ExprInt(1, float_c0.size),
             float_c2: m2_expr.ExprInt(0, float_c2.size),
             float_c3: m2_expr.ExprInt(0, float_c3.size),
             ir.IRDst: loc_next_expr,
         }, instr)]),
-        IRBlock(locs["Infinity"][0], [AssignBlock({
+        IRBlock(ir.loc_db, locs["Infinity"][0], [AssignBlock({
             float_c0: m2_expr.ExprInt(1, float_c0.size),
             float_c2: m2_expr.ExprInt(1, float_c2.size),
             float_c3: m2_expr.ExprInt(0, float_c3.size),
             ir.IRDst: loc_next_expr,
         }, instr)]),
-        IRBlock(locs["Normal"][0], [AssignBlock({
+        IRBlock(ir.loc_db, locs["Normal"][0], [AssignBlock({
             float_c0: m2_expr.ExprInt(0, float_c0.size),
             float_c2: m2_expr.ExprInt(1, float_c2.size),
             float_c3: m2_expr.ExprInt(0, float_c3.size),
@@ -3255,8 +3272,8 @@ def bsr_bsf(ir, instr, dst, src, op_func):
     e_src_not_null.append(m2_expr.ExprAssign(dst, op_func(src)))
     e_src_not_null.append(aff_dst)
 
-    return e, [IRBlock(loc_src_null, [AssignBlock(e_src_null, instr)]),
-               IRBlock(loc_src_not_null, [AssignBlock(e_src_not_null, instr)])]
+    return e, [IRBlock(ir.loc_db, loc_src_null, [AssignBlock(e_src_null, instr)]),
+               IRBlock(ir.loc_db, loc_src_not_null, [AssignBlock(e_src_not_null, instr)])]
 
 
 def bsf(ir, instr, dst, src):
@@ -3469,7 +3486,7 @@ def bittest_get(ir, instr, src, index):
         b_mask = {16: 4, 32: 5, 64: 6}
         b_decal = {16: 1, 32: 3, 64: 7}
         ptr = src.ptr
-        segm = src.is_mem_segm()
+        segm = is_mem_segm(src)
         if segm:
             ptr = ptr.args[1]
 
@@ -4963,7 +4980,7 @@ def maskmovq(ir, instr, src, mask):
                                 m2_expr.ExprCond(bit,
                                                  write_label,
                                                  next_check_label))
-        blks.append(IRBlock(cur_label.loc_key, [AssignBlock([check], instr)]))
+        blks.append(IRBlock(ir.loc_db, cur_label.loc_key, [AssignBlock([check], instr)]))
 
     # Build write blocks
     dst_addr = mRDI[instr.mode]
@@ -4976,7 +4993,7 @@ def maskmovq(ir, instr, src, mask):
         write_mem = m2_expr.ExprAssign(m2_expr.ExprMem(write_addr, 8),
                                     src[start: start + 8])
         jump = m2_expr.ExprAssign(ir.IRDst, next_check_label)
-        blks.append(IRBlock(cur_label.loc_key, [AssignBlock([write_mem, jump], instr)]))
+        blks.append(IRBlock(ir.loc_db, cur_label.loc_key, [AssignBlock([write_mem, jump], instr)]))
 
     # If mask is null, bypass all
     e = [m2_expr.ExprAssign(ir.IRDst, m2_expr.ExprCond(mask,
@@ -5731,10 +5748,10 @@ mnemo_func = {'mov': mov,
               }
 
 
-class ir_x86_16(IntermediateRepresentation):
+class Lifter_X86_16(Lifter):
 
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_x86, 16, loc_db)
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_x86, 16, loc_db)
         self.do_stk_segm = False
         self.do_ds_segm = False
         self.do_str_segm = False
@@ -5780,7 +5797,7 @@ class ir_x86_16(IntermediateRepresentation):
                 instr.additional_info.g2.value]
         if my_ss is not None:
             for i, a in enumerate(args):
-                if a.is_mem() and not a.is_mem_segm():
+                if a.is_mem() and not is_mem_segm(a):
                     args[i] = self.ExprMem(m2_expr.ExprOp('segm', my_ss,
                                                           a.ptr), a.size)
 
@@ -5837,10 +5854,10 @@ class ir_x86_16(IntermediateRepresentation):
         cond_bloc.append(m2_expr.ExprAssign(self.IRDst, m2_expr.ExprCond(c_cond,
                                                                       loc_skip_expr,
                                                                       loc_do_expr)))
-        cond_bloc = IRBlock(loc_end, [AssignBlock(cond_bloc, instr)])
+        cond_bloc = IRBlock(self.loc_db, loc_end, [AssignBlock(cond_bloc, instr)])
         e_do = instr_ir
 
-        c = IRBlock(loc_do, [AssignBlock(e_do, instr)])
+        c = IRBlock(self.loc_db, loc_do, [AssignBlock(e_do, instr)])
         e_n = [m2_expr.ExprAssign(self.IRDst, m2_expr.ExprCond(c_reg, loc_do_expr,
                                                             loc_skip_expr))]
         return e_n, [cond_bloc, c] + new_extra_ir
@@ -5871,13 +5888,13 @@ class ir_x86_16(IntermediateRepresentation):
                 src = self.expr_fix_regs_for_mode(src, mode)
                 new_assignblk[dst] = src
             irs.append(AssignBlock(new_assignblk, assignblk.instr))
-        return IRBlock(irblock.loc_key, irs)
+        return IRBlock(self.loc_db, irblock.loc_key, irs)
 
 
-class ir_x86_32(ir_x86_16):
+class Lifter_X86_32(Lifter_X86_16):
 
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_x86, 32, loc_db)
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_x86, 32, loc_db)
         self.do_stk_segm = False
         self.do_ds_segm = False
         self.do_str_segm = False
@@ -5888,10 +5905,10 @@ class ir_x86_32(ir_x86_16):
         self.addrsize = 32
 
 
-class ir_x86_64(ir_x86_16):
+class Lifter_X86_64(Lifter_X86_16):
 
-    def __init__(self, loc_db=None):
-        IntermediateRepresentation.__init__(self, mn_x86, 64, loc_db)
+    def __init__(self, loc_db):
+        Lifter.__init__(self, mn_x86, 64, loc_db)
         self.do_stk_segm = False
         self.do_ds_segm = False
         self.do_str_segm = False

@@ -9,7 +9,7 @@ from miasm.expression.expression import ExprId, ExprInt, ExprAssign, ExprCond, \
     ExprLoc, LocKey
 
 from miasm.core.locationdb import LocationDB
-from miasm.ir.analysis import ira
+from miasm.ir.analysis import LifterModelCall
 from miasm.ir.ir import IRBlock, AssignBlock, IRCFG
 from miasm.analysis.data_flow import merge_blocks
 
@@ -70,11 +70,11 @@ class Arch(object):
         return SP
 
 
-class IRATest(ira):
+class IRATest(LifterModelCall):
 
     """Fake IRA class for tests"""
 
-    def __init__(self, loc_db=None):
+    def __init__(self, loc_db):
         arch = Arch()
         super(IRATest, self).__init__(arch, 32, loc_db)
         self.IRDst = IRDst
@@ -95,7 +95,7 @@ def gen_irblock(label, exprs_list):
         else:
             irs.append(AssignBlock(exprs))
 
-    irbl = IRBlock(label, irs)
+    irbl = IRBlock(loc_db, label, irs)
     return irbl
 
 

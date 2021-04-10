@@ -62,27 +62,6 @@ class MiasmTransformer(ast.NodeTransformer):
 
         return node
 
-    def visit_Subscript(self, node):
-        """memX[Y] -> ExprMem(Y, X)"""
-
-        # Recursive visit
-        node = self.generic_visit(node)
-
-        # Detect the syntax
-        if not isinstance(node.value, ast.Name):
-            return node
-        name = node.value.id
-        mem = self.parse_mem.search(name)
-        if mem is None:
-            return node
-
-        # Do replacement
-        addr = self.visit(node.slice.value)
-        call = ast.Call(func=ast.Name(id='ExprMem', ctx=ast.Load()),
-                        args=[addr, ast.Num(n=int(mem.groups()[0]))],
-                        keywords=[], starargs=None, kwargs=None)
-        return call
-
     def visit_IfExp(self, node):
         """X if Y else Z -> ExprCond(Y, X, Z)"""
         # Recursive visit
@@ -242,6 +221,9 @@ class SemBuilder(object):
                 IRDst = ast.Attribute(value=ast.Name(id='ir',
                                                      ctx=ast.Load()),
                                       attr='IRDst', ctx=ast.Load())
+                loc_db = ast.Attribute(value=ast.Name(id='ir',
+                                                     ctx=ast.Load()),
+                                      attr='loc_db', ctx=ast.Load())
                 blocks[-1][-1].append(ast.Call(func=ast.Name(id='ExprAssign',
                                                              ctx=ast.Load()),
                                                args=[IRDst, dst],
@@ -288,8 +270,11 @@ class SemBuilder(object):
 
                     sub_blocks[-1] = ast.Call(func=ast.Name(id='IRBlock',
                                                             ctx=ast.Load()),
-                                              args=[loc_if_name,
-                                                    assignblks],
+                                              args=[
+                                                  loc_db,
+                                                  loc_if_name,
+                                                  assignblks
+                                              ],
                                               keywords=[],
                                               starargs=None,
                                               kwargs=None)

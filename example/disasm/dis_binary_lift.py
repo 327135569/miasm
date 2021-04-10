@@ -1,17 +1,18 @@
 from __future__ import print_function
 import sys
-
 from future.utils import viewvalues
 from miasm.analysis.binary import Container
 from miasm.analysis.machine import Machine
+from miasm.core.locationdb import LocationDB
 
 #####################################
 # Common section from dis_binary.py #
 #####################################
 
 fdesc = open(sys.argv[1], 'rb')
+loc_db = LocationDB()
 
-cont = Container.from_stream(fdesc)
+cont = Container.from_stream(fdesc, loc_db)
 
 machine = Machine(cont.arch)
 
@@ -24,17 +25,15 @@ asmcfg = mdis.dis_multiblock(addr)
 #    End common section             #
 #####################################
 
-# Get an IRA converter
-# The sub call are modelised by default operators
-# call_func_ret and call_func_stack
-ir_arch_analysis = machine.ira(mdis.loc_db)
+# Get a Lifter
+lifter = machine.lifter(mdis.loc_db)
 
 # Get the IR of the asmcfg
-ircfg_analysis = ir_arch_analysis.new_ircfg_from_asmcfg(asmcfg)
+ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
 
 # Display each IR basic blocks
-for irblock in viewvalues(ircfg_analysis.blocks):
+for irblock in viewvalues(ircfg.blocks):
     print(irblock)
 
 # Output ir control flow graph in a dot file
-open('bin_ira_cfg.dot', 'w').write(ircfg_analysis.dot())
+open('bin_ir_cfg.dot', 'w').write(ircfg.dot())

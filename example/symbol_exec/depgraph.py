@@ -10,6 +10,7 @@ from miasm.analysis.machine import Machine
 from miasm.analysis.binary import Container
 from miasm.analysis.depgraph import DependencyGraph
 from miasm.expression.expression import ExprMem, ExprId, ExprInt
+from miasm.core.locationdb import LocationDB
 
 parser = ArgumentParser("Dependency grapher")
 parser.add_argument("filename", help="Binary to analyse")
@@ -33,10 +34,10 @@ parser.add_argument("--json",
                     help="Output solution in JSON",
                     action="store_true")
 args = parser.parse_args()
-
+loc_db = LocationDB()
 # Get architecture
 with open(args.filename, "rb") as fstream:
-    cont = Container.from_stream(fstream)
+    cont = Container.from_stream(fstream, loc_db)
 
 arch = args.architecture if args.architecture else cont.arch
 machine = Machine(arch)
@@ -50,8 +51,8 @@ for element in args.element:
     except KeyError:
         raise ValueError("Unknown element '%s'" % element)
 
-mdis = machine.dis_engine(cont.bin_stream, dont_dis_nulstart_bloc=True)
-ir_arch = machine.ira(mdis.loc_db)
+mdis = machine.dis_engine(cont.bin_stream, dont_dis_nulstart_bloc=True, loc_db=loc_db)
+lifter = machine.lifter_model_call(loc_db)
 
 # Common argument forms
 init_ctx = {}
@@ -66,7 +67,7 @@ if args.rename_args:
 asmcfg = mdis.dis_multiblock(int(args.func_addr, 0))
 
 # Generate IR
-ircfg = ir_arch.new_ircfg_from_asmcfg(asmcfg)
+ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
 
 # Get the instance
 dg = DependencyGraph(
@@ -92,7 +93,7 @@ for sol_nb, sol in enumerate(dg.get(current_block.loc_key, elements, assignblk_i
     with open(fname, "w") as fdesc:
             fdesc.write(sol.graph.dot())
 
-    results = sol.emul(ir_arch, ctx=init_ctx)
+    results = sol.emul(lifter, ctx=init_ctx)
     tokens = {str(k): str(v) for k, v in viewitems(results)}
     if not args.json:
         result = ", ".join("=".join(x) for x in viewitems(tokens))

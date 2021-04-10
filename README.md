@@ -91,7 +91,7 @@ Using `Machine` abstraction:
 XOR        ESI, DWORD PTR [EAX]
 ```
 
-For Mips:
+For MIPS:
 ```pycon
 >>> mn = Machine('mips32b').mn
 >>> print(mn.dis(b'\x97\xa3\x00 ', "b"))
@@ -111,21 +111,21 @@ ADD        R2, R8, R0
 
 Create an intermediate representation object:
 ```pycon
->>> ira = machine.ira(loc_db)
+>>> lifter = machine.lifter_model_call(loc_db)
 ```
-Create an empty ircfg
+Create an empty ircfg:
 ```pycon
->>> ircfg = ira.new_ircfg()
+>>> ircfg = lifter.new_ircfg()
 ```
 Add instruction to the pool:
 ```pycon
->>> ira.add_instr_to_ircfg(instr, ircfg)
+>>> lifter.add_instr_to_ircfg(instr, ircfg)
 ```
 
 Print current pool:
 ```pycon
 >>> for lbl, irblock in ircfg.blocks.items():
-...     print(irblock.to_string(loc_db))
+...     print(irblock)
 loc_0:
 R2 = R8 + R0
 
@@ -134,10 +134,10 @@ IRDst = loc_4
 ```
 Working with IR, for instance by getting side effects:
 ```pycon
->>> for lbl, irblock in ircfg.blocks.iteritems():
+>>> for lbl, irblock in ircfg.blocks.items():
 ...     for assignblk in irblock:
 ...         rw = assignblk.get_rw()
-...         for dst, reads in rw.iteritems():
+...         for dst, reads in rw.items():
 ...             print('read:   ', [str(x) for x in reads])
 ...             print('written:', dst)
 ...             print()
@@ -166,13 +166,13 @@ Giving a shellcode:
 00000010 8d5b01      lea    ebx, [ebx+0x1]
 00000013 89d8        mov    eax, ebx
 00000015 c3          ret
->>> s = '\x8dI\x04\x8d[\x01\x80\xf9\x01t\x05\x8d[\xff\xeb\x03\x8d[\x01\x89\xd8\xc3'
+>>> s = b'\x8dI\x04\x8d[\x01\x80\xf9\x01t\x05\x8d[\xff\xeb\x03\x8d[\x01\x89\xd8\xc3'
 ```
 Import the shellcode thanks to the `Container` abstraction:
 
 ```pycon
 >>> from miasm.analysis.binary import Container
->>> c = Container.from_string(s)
+>>> c = Container.from_string(s, loc_db)
 >>> c
 <miasm.analysis.binary.ContainerUnknown object at 0x7f34cefe6090>
 ```
@@ -182,10 +182,10 @@ Disassembling the shellcode at address `0`:
 ```pycon
 >>> from miasm.analysis.machine import Machine
 >>> machine = Machine('x86_32')
->>> mdis = machine.dis_engine(c.bin_stream)
+>>> mdis = machine.dis_engine(c.bin_stream, loc_db=loc_db)
 >>> asmcfg = mdis.dis_multiblock(0)
 >>> for block in asmcfg.blocks:
-...  print(block.to_string(asmcfg.loc_db))
+...  print(block)
 ...
 loc_0
 LEA        ECX, DWORD PTR [ECX + 0x4]
@@ -205,10 +205,10 @@ MOV        EAX, EBX
 RET
 ```
 
-Initializing the Jit engine with a stack:
+Initializing the JIT engine with a stack:
 
 ```pycon
->>> jitter = machine.jitter(jit_type='python')
+>>> jitter = machine.jitter(loc_db, jit_type='python')
 >>> jitter.init_stack()
 ```
 
@@ -284,15 +284,15 @@ Symbolic execution
 Initializing the IR pool:
 
 ```pycon
->>> ira = machine.ira(loc_db)
->>> ircfg = ira.new_ircfg_from_asmcfg(asmcfg)
+>>> lifter = machine.lifter_model_call(loc_db)
+>>> ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
 ```
 
 Initializing the engine with default symbolic values:
 
 ```pycon
 >>> from miasm.ir.symbexec import SymbolicExecutionEngine
->>> sb = SymbolicExecutionEngine(ira)
+>>> sb = SymbolicExecutionEngine(lifter)
 ```
 
 Launching the execution:
@@ -306,7 +306,7 @@ Launching the execution:
 Same, with step logs (only changes are displayed):
 
 ```pycon
->>> sb = SymbolicExecutionEngine(ira, machine.mn.regs.regs_init)
+>>> sb = SymbolicExecutionEngine(lifter, machine.mn.regs.regs_init)
 >>> symbolic_pc = sb.run_at(ircfg, 0, step=True)
 Instr LEA        ECX, DWORD PTR [ECX + 0x4]
 Assignblk:
@@ -517,7 +517,9 @@ Documentation
 
 TODO
 
-An auto-generated documentation is available [here](http://miasmdoc.ajax.re).
+An auto-generated documentation is available:
+* [Doxygen](http://miasm.re/miasm_doxygen)
+* [pdoc](http://miasm.re/miasm_pdoc)
 
 Obtaining Miasm
 ===============
@@ -595,10 +597,10 @@ They already use Miasm
 Tools
 -----
 
-* [Sibyl](https://github.com/cea-sec/Sibyl): A function divination too
+* [Sibyl](https://github.com/cea-sec/Sibyl): A function divination tool
 * [R2M2](https://github.com/guedou/r2m2): Use miasm as a radare2 plugin
-* [CGrex](https://github.com/mechaphish/cgrex) : Targeted patcher for CGC binaries
-* [ethRE](https://github.com/jbcayrou/ethRE) Reversing tool for Ethereum EVM (with corresponding Miasm2 architecture)
+* [CGrex](https://github.com/mechaphish/cgrex): Targeted patcher for CGC binaries
+* [ethRE](https://github.com/jbcayrou/ethRE): Reversing tool for Ethereum EVM (with corresponding Miasm2 architecture)
 
 Blog posts / papers / conferences
 ---------------------------------

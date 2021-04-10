@@ -26,7 +26,6 @@ from miasm.core.interval import interval
 from miasm.core.utils import BoundedDict
 from miasm.expression.expression import LocKey
 from miasm.jitter.csts import *
-from miasm.arch.arm.sem import *
 
 class JitCore(object):
 
@@ -38,15 +37,15 @@ class JitCore(object):
     jitted_block_delete_cb = None
     jitted_block_max_size = 10000
 
-    def __init__(self, ir_arch, bin_stream):
+    def __init__(self, lifter, bin_stream):
         """Initialise a JitCore instance.
-        @ir_arch: ir instance for current architecture
+        @lifter: Lifter instance for current architecture
         @bin_stream: bin_stream instance
         """
         # Arch related
-        self.ir_arch = ir_arch
-        self.ircfg = self.ir_arch.new_ircfg()
-        self.arch_name = "%s%s" % (self.ir_arch.arch.name, self.ir_arch.attrib)
+        self.lifter = lifter
+        self.ircfg = self.lifter.new_ircfg()
+        self.arch_name = "%s%s" % (self.lifter.arch.name, self.lifter.attrib)
 
         # Structures for block tracking
         self.offset_to_jitted_func = BoundedDict(self.jitted_block_max_size,
@@ -65,16 +64,18 @@ class JitCore(object):
         # Disassembly Engine
         self.split_dis = set()
         self.mdis = disasmEngine(
-            ir_arch.arch, ir_arch.attrib, bin_stream,
+            lifter.arch, lifter.attrib, bin_stream,
             lines_wd=self.options["jit_maxline"],
-            loc_db=ir_arch.loc_db,
+            loc_db=lifter.loc_db,
             follow_call=False,
             dontdis_retcall=False,
             split_dis=self.split_dis,
         )
 
-        self.then_offsets = []
-        self.else_offsets = []
+    @property
+    def ir_arch(self):
+        warnings.warn('DEPRECATION WARNING: use ".lifter" instead of ".ir_arch"')
+        return self.lifter
 
 
     def set_options(self, **kwargs):
@@ -108,7 +109,7 @@ class JitCore(object):
             cur_block.ad_max = cur_block.lines[-1].offset + cur_block.lines[-1].l
         else:
             # 1 byte block for unknown mnemonic
-            offset = self.ir_arch.loc_db.get_location_offset(cur_block.loc_key)
+            offset = self.lifter.loc_db.get_location_offset(cur_block.loc_key)
             cur_block.ad_min = offset
             cur_block.ad_max = offset+1
 
@@ -135,7 +136,7 @@ class JitCore(object):
 
         # Get the block
         if isinstance(addr, LocKey):
-            addr = self.ir_arch.loc_db.get_location_offset(addr)
+            addr = self.lifter.loc_db.get_location_offset(addr)
             if addr is None:
                 raise RuntimeError("Unknown offset for LocKey")
 
@@ -148,7 +149,7 @@ class JitCore(object):
             return cur_block
         # Logging
         if self.log_newbloc:
-            print(cur_block.to_string(self.mdis.loc_db))
+            print(cur_block)
 
         # Update label -> block
         self.loc_key_to_block[cur_block.loc_key] = cur_block
@@ -163,20 +164,6 @@ class JitCore(object):
         self.add_block_to_mem_interval(vm, cur_block)
         return cur_block
 
-    def parse_itt(self, instr):
-        name = instr.name
-        assert name.startswith('IT')
-        name = name[1:]
-        out = []
-        for hint in name:
-            if hint == 'T':
-                out.append(0)
-            elif hint == "E":
-                out.append(1)
-            else:
-                raise ValueError("IT name invalid %s" % instr)
-        return out, instr.args[0]
-
     def run_at(self, cpu, offset, stop_offsets):
         """Run from the starting address @offset.
         Execution will stop if:
@@ -190,144 +177,10 @@ class JitCore(object):
         """
 
         if offset is None:
-            offset = getattr(cpu, self.ir_arch.pc.name)
+            offset = getattr(cpu, self.lifter.pc.name)
 
         if offset not in self.offset_to_jitted_func:
             # Need to JiT the block
-
-            cur_block = self.mdis.dis_block(offset)
-            if isinstance(cur_block, AsmBlockBad):
-                errno = cur_block.errno
-                if errno == AsmBlockBad.ERROR_IO:
-                    cpu.vmmngr.set_exception(EXCEPT_ACCESS_VIOL)
-                elif errno == AsmBlockBad.ERROR_CANNOT_DISASM:
-                    cpu.set_exception(EXCEPT_UNK_MNEMO)
-                else:
-                    raise RuntimeError("Unhandled disasm result %r" % errno)
-                return offset
-
-            instr = cur_block.lines[0]
-            if instr.name.startswith("IT"):
-
-                assert len(self.then_offsets) == 0
-                assert len(self.else_offsets) == 0
-
-                self.then_offsets.clear()
-                self.else_offsets.clear()
-
-                newpc = offset + instr.l
-
-                it_hints, it_cond = self.parse_itt(instr)
-
-                off = offset
-
-                for hint in it_hints:
-
-                    # get next inst offset
-                    off = off + self.mdis.dis_block(off).lines[0].l
-
-                    if hint == 0:
-                        # then instructions
-
-                        if "EQ" in str(instr):
-                            if cpu.zf == 1:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "NE" in str(instr):
-                            if cpu.zf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "LT" in str(instr):
-                            if cpu.of != cpu.nf:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "CC" in str(instr):
-                            if cpu.cf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "LS" in str(instr):
-                            if cpu.cf == 1 or cpu.zf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "CS" in str(instr):
-                            if cpu.cf == 1:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        else:
-                            raise NotImplementedError("IT cond missing")
-
-                    else:
-                        # else instructions
-
-                        if "EQ" in str(instr):
-                            if cpu.zf == 0:
-                                self.else_offsets.append([off, 1])
-                            else:
-                                self.else_offsets.append([off, 0])
-
-                        elif "NE" in str(instr):
-                            if cpu.zf == 1:
-                                self.else_offsets.append([off, 1])
-                            else:
-                                self.else_offsets.append([off, 0])
-
-                        elif "LT" in str(instr):
-                            if cpu.of != cpu.nf:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "CC" in str(instr):
-                            if cpu.cf == 0:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "LS" in str(instr):
-                            if cpu.cf == 1 or cpu.zf == 0:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "CS" in str(instr):
-                            if cpu.cf == 1:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        else:
-                            raise NotImplementedError("IT cond missing")
-
-                return newpc
-
-            # offset behind IT instruction
-            if len(self.then_offsets):
-                off, ex = self.then_offsets.pop(0)
-                assert off == offset
-
-                # cond unstatify, ignore
-                if ex == 0:
-                    return offset + instr.l
-
-            if len(self.else_offsets):
-                off, ex = self.else_offsets.pop(0)
-                assert off == offset
-
-                if ex == 0:
-                    return offset + instr.l
-
             cur_block = self.disasm_and_jit_block(offset, cpu.vmmngr)
             if isinstance(cur_block, AsmBlockBad):
                 errno = cur_block.errno
@@ -389,13 +242,13 @@ class JitCore(object):
             try:
                 for irblock in block.blocks:
                     # Remove offset -> jitted block link
-                    offset = self.ir_arch.loc_db.get_location_offset(irblock.loc_key)
+                    offset = self.lifter.loc_db.get_location_offset(irblock.loc_key)
                     if offset in self.offset_to_jitted_func:
                         del(self.offset_to_jitted_func[offset])
 
             except AttributeError:
                 # The block has never been translated in IR
-                offset = self.ir_arch.loc_db.get_location_offset(block.loc_key)
+                offset = self.lifter.loc_db.get_location_offset(block.loc_key)
                 if offset in self.offset_to_jitted_func:
                     del(self.offset_to_jitted_func[offset])
 
@@ -432,7 +285,7 @@ class JitCore(object):
         @block: asmblock
         """
         block_raw = b"".join(line.b for line in block.lines)
-        offset = self.ir_arch.loc_db.get_location_offset(block.loc_key)
+        offset = self.lifter.loc_db.get_location_offset(block.loc_key)
         block_hash = md5(
             b"%X_%s_%s_%s_%s" % (
                 offset,

@@ -49,9 +49,7 @@ Here are a few remainings TODO:
 """
 from builtins import range
 from collections import namedtuple
-
-from miasm.arch.arm.sem import *
-from miasm.core.asmblock import AsmBlockBad
+import warnings
 
 try:
     import z3
@@ -69,8 +67,6 @@ from miasm.expression.expression_helper import possible_values
 from miasm.ir.translators import Translator
 from miasm.analysis.expression_range import expr_range
 from miasm.analysis.modularintervals import ModularIntervals
-from miasm.core.locationdb import LocationDB
-from miasm.core.asmblock import AsmBlock
 
 DriftInfo = namedtuple("DriftInfo", ["symbol", "computed", "expected"])
 
@@ -166,23 +162,20 @@ class DSEEngine(object):
     """
     SYMB_ENGINE = ESETrackModif
 
-    def __init__(self, machine):
+    def __init__(self, machine, loc_db):
         self.machine = machine
-        self.loc_db = LocationDB()
+        self.loc_db = loc_db
         self.handler = {} # addr -> callback(DSEEngine instance)
         self.instrumentation = {} # addr -> callback(DSEEngine instance)
         self.addr_to_cacheblocks = {} # addr -> {label -> IRBlock}
-        self.ir_arch = self.machine.ir(loc_db=self.loc_db) # corresponding IR
-        self.ircfg = self.ir_arch.new_ircfg() # corresponding IR
+        self.lifter = self.machine.lifter(loc_db=self.loc_db) # corresponding IR
+        self.ircfg = self.lifter.new_ircfg() # corresponding IR
 
         # Defined after attachment
         self.jitter = None # Jitload (concrete execution)
         self.symb = None # SymbolicExecutionEngine
         self.symb_concrete = None # Concrete SymbExec for path desambiguisation
         self.mdis = None # DisasmEngine
-
-        self.then_offsets = []
-        self.else_offsets = []
 
     def prepare(self):
         """Prepare the environment for attachment with a jitter"""
@@ -194,17 +187,17 @@ class DSEEngine(object):
         # Symbexec engine
         ## Prepare symbexec engines
         self.symb = self.SYMB_ENGINE(self.jitter.cpu, self.jitter.vm,
-                                     self.ir_arch, {})
+                                     self.lifter, {})
         self.symb.enable_emulated_simplifications()
         self.symb_concrete = ESENoVMSideEffects(
             self.jitter.cpu, self.jitter.vm,
-            self.ir_arch, {}
+            self.lifter, {}
         )
 
         ## Update registers value
-        self.symb.symbols[self.ir_arch.IRDst] = ExprInt(
-            getattr(self.jitter.cpu, self.ir_arch.pc.name),
-            self.ir_arch.IRDst.size
+        self.symb.symbols[self.lifter.IRDst] = ExprInt(
+            getattr(self.jitter.cpu, self.lifter.pc.name),
+            self.lifter.IRDst.size
         )
 
         # Activate callback on each instr
@@ -296,7 +289,7 @@ class DSEEngine(object):
 
         for symbol in self.symb.modified_expr:
             # Do not consider PC
-            if symbol in [self.ir_arch.pc, self.ir_arch.IRDst]:
+            if symbol in [self.lifter.pc, self.lifter.IRDst]:
                 continue
 
             # Consider only concrete values
@@ -324,20 +317,6 @@ class DSEEngine(object):
         if errors:
             raise DriftException(errors)
 
-    def parse_itt(self, instr):
-        name = instr.name
-        assert name.startswith('IT')
-        name = name[1:]
-        out = []
-        for hint in name:
-            if hint == 'T':
-                out.append(0)
-            elif hint == "E":
-                out.append(1)
-            else:
-                raise ValueError("IT name invalid %s" % instr)
-        return out, instr.args[0]
-
     def callback(self, _):
         """Called before each instruction"""
         # Assert synchronization with concrete execution
@@ -346,7 +325,7 @@ class DSEEngine(object):
         # Call callbacks associated to the current address
         cur_addr = self.jitter.pc
         if isinstance(cur_addr, LocKey):
-            lbl = self.ir_arch.loc_db.loc_key_to_label(cur_addr)
+            lbl = self.lifter.loc_db.loc_key_to_label(cur_addr)
             cur_addr = lbl.offset
 
         if cur_addr in self.handler:
@@ -357,17 +336,11 @@ class DSEEngine(object):
             self.instrumentation[cur_addr](self)
 
         # Handle current address
-        self.handle(ExprInt(cur_addr, self.ir_arch.IRDst.size))
+        self.handle(ExprInt(cur_addr, self.lifter.IRDst.size))
 
         # Avoid memory issue in ExpressionSimplifier
         if len(self.symb.expr_simp.cache) > 100000:
             self.symb.expr_simp.cache.clear()
-
-        # for IT instruction check
-        asm_block = self.mdis.dis_block(cur_addr)
-        instr = None
-        if not isinstance(asm_block, AsmBlockBad):
-            instr = asm_block.lines[0]
 
         # Get IR blocks
         if cur_addr in self.addr_to_cacheblocks:
@@ -378,138 +351,10 @@ class DSEEngine(object):
             ## Reset cache structures
             self.ircfg.blocks.clear()# = {}
 
-            # check if IT instrs
-            if instr and instr.name.startswith("IT"):
-
-                assert len(self.then_offsets) == 0
-                assert len(self.else_offsets) == 0
-
-                self.then_offsets.clear()
-                self.else_offsets.clear()
-
-                it_hints, it_cond = self.parse_itt(instr)
-
-                self.update_state({
-                    self.ir_arch.pc: ExprInt(self.jitter.pc + instr.l, 32),
-                })
-
-                off = cur_addr
-
-                for hint in it_hints:
-
-                    # get next inst offset
-                    off = off + self.mdis.dis_block(off).lines[0].l
-
-                    if hint == 0:
-                        # then insts
-
-                        if "EQ" in str(instr.args):
-                            if self.jitter.cpu.zf == 1:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "NE" in str(instr.args):
-                            if self.jitter.cpu.zf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "LT" in str(instr.args):
-                            if self.jitter.cpu.of != self.jitter.cpu.nf:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "CC" in str(instr.args):
-                            if self.jitter.cpu.cf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "LS" in str(instr.args):
-                            if self.jitter.cpu.cf == 1 or self.jitter.cpu.zf == 0:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        elif "CS" in str(instr.args):
-                            if self.jitter.cpu.cf == 1:
-                                self.then_offsets.append([off, 1])
-                            else:
-                                self.then_offsets.append([off, 0])
-
-                        else:
-                            raise NotImplementedError("IT cond missing")
-
-                    else:
-                        # else insts
-
-                        if "EQ" in str(instr.args):
-                            if self.jitter.cpu.zf == 0:
-                                self.else_offsets.append([off, 1])
-                            else:
-                                self.else_offsets.append([off, 0])
-
-                        elif "NE" in str(instr.args):
-                            if self.jitter.cpu.zf == 1:
-                                self.else_offsets.append([off, 1])
-                            else:
-                                self.else_offsets.append([off, 0])
-
-                        elif "LT" in str(instr.args):
-                            if self.jitter.cpu.of != self.jitter.cpu.nf:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "CC" in str(instr.args):
-                            if self.jitter.cpu.cf == 0:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "LS" in str(instr.args):
-                            if self.jitter.cpu.cf == 1 or self.jitter.cpu.zf == 0:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        elif "CS" in str(instr.args):
-                            if self.jitter.cpu.cf == 1:
-                                self.else_offsets.append([off, 0])
-                            else:
-                                self.else_offsets.append([off, 1])
-
-                        else:
-                            raise NotImplementedError("IT cond missing")
-
-                return True
-
-            self.ir_arch.add_asmblock_to_ircfg(asm_block, self.ircfg)
+            ## Update current state
+            asm_block = self.mdis.dis_block(cur_addr)
+            self.lifter.add_asmblock_to_ircfg(asm_block, self.ircfg)
             self.addr_to_cacheblocks[cur_addr] = dict(self.ircfg.blocks)
-
-        # offset behind IT instruction
-        if len(self.then_offsets):
-            off, ex = self.then_offsets.pop(0)
-            assert off == cur_addr
-
-            # cond unstatify, ignore
-            if ex == 0:
-                self.update_state({
-                    self.ir_arch.pc: ExprInt(self.jitter.pc + instr.l, 32),
-                })
-                return True
-
-        if len(self.else_offsets):
-            off, ex = self.else_offsets.pop(0)
-            assert off == cur_addr
-
-            if ex == 0:
-                self.update_state({
-                    self.ir_arch.pc: ExprInt(self.jitter.pc + instr.l, 32),
-                })
-                return True
 
         # Emulate the current instruction
         self.symb.reset_modified()
@@ -535,7 +380,7 @@ class DSEEngine(object):
                 self.symb.run_block_at(self.ircfg, cur_addr)
 
                 if not (isinstance(next_addr_concrete, ExprLoc) and
-                        self.ir_arch.loc_db.get_location_offset(
+                        self.lifter.loc_db.get_location_offset(
                             next_addr_concrete.loc_key
                         ) is None):
                     # Not a lbl_gen, exit
@@ -556,7 +401,7 @@ class DSEEngine(object):
         This version use the regs associated to the attrib (!= cpu.get_gpreg())
         """
         out = {}
-        regs = self.ir_arch.arch.regs.attrib_to_regs[self.ir_arch.attrib]
+        regs = self.lifter.arch.regs.attrib_to_regs[self.lifter.attrib]
         for reg in regs:
             if hasattr(self.jitter.cpu, reg.name):
                 out[reg.name] = getattr(self.jitter.cpu, reg.name)
@@ -588,7 +433,7 @@ class DSEEngine(object):
                 )
 
         # Restore registers
-        self.jitter.pc = snapshot["regs"][self.ir_arch.pc.name]
+        self.jitter.pc = snapshot["regs"][self.lifter.pc.name]
         for reg, value in viewitems(snapshot["regs"]):
             setattr(self.jitter.cpu, reg, value)
 
@@ -616,7 +461,7 @@ class DSEEngine(object):
             # not present
             symbexec.symbols.symbols_mem.base_to_memarray.clear()
         if cpu:
-            regs = self.ir_arch.arch.regs.attrib_to_regs[self.ir_arch.attrib]
+            regs = self.lifter.arch.regs.attrib_to_regs[self.lifter.attrib]
             for reg in regs:
                 if hasattr(self.jitter.cpu, reg.name):
                     value = ExprInt(getattr(self.jitter.cpu, reg.name),
@@ -682,13 +527,13 @@ class DSEPathConstraint(DSEEngine):
     PRODUCE_SOLUTION_BRANCH_COV = 2
     PRODUCE_SOLUTION_PATH_COV = 3
 
-    def __init__(self, machine, produce_solution=PRODUCE_SOLUTION_CODE_COV,
+    def __init__(self, machine, loc_db, produce_solution=PRODUCE_SOLUTION_CODE_COV,
                  known_solutions=None,
                  **kwargs):
         """Init a DSEPathConstraint
         @machine: Machine of the targeted architecture instance
         @produce_solution: (optional) if set, new solutions will be computed"""
-        super(DSEPathConstraint, self).__init__(machine, **kwargs)
+        super(DSEPathConstraint, self).__init__(machine, loc_db, **kwargs)
 
         # Dependency check
         assert z3 is not None
@@ -703,6 +548,11 @@ class DSEPathConstraint(DSEEngine):
         self._history = None
         if produce_solution == self.PRODUCE_SOLUTION_PATH_COV:
             self._history = [] # List of addresses in the current path
+
+    @property
+    def ir_arch(self):
+        warnings.warn('DEPRECATION WARNING: use ".lifter" instead of ".ir_arch"')
+        return self.lifter
 
     def take_snapshot(self, *args, **kwargs):
         snap = super(DSEPathConstraint, self).take_snapshot(*args, **kwargs)
@@ -794,17 +644,17 @@ class DSEPathConstraint(DSEEngine):
             self.cur_solver.add(self.z3_trans.from_expr(cons))
 
     def handle(self, cur_addr):
-        cur_addr = canonize_to_exprloc(self.ir_arch.loc_db, cur_addr)
-        symb_pc = self.eval_expr(self.ir_arch.IRDst)
+        cur_addr = canonize_to_exprloc(self.lifter.loc_db, cur_addr)
+        symb_pc = self.eval_expr(self.lifter.IRDst)
         possibilities = possible_values(symb_pc)
         cur_path_constraint = set() # path_constraint for the concrete path
         if len(possibilities) == 1:
             dst = next(iter(possibilities)).value
-            dst = canonize_to_exprloc(self.ir_arch.loc_db, dst)
+            dst = canonize_to_exprloc(self.lifter.loc_db, dst)
             assert dst == cur_addr
         else:
             for possibility in possibilities:
-                target_addr = canonize_to_exprloc(self.ir_arch.loc_db, possibility.value)
+                target_addr = canonize_to_exprloc(self.lifter.loc_db, possibility.value)
                 path_constraint = set() # Set of ExprAssign for the possible path
 
                 # Get constraint associated to the possible path
@@ -838,7 +688,7 @@ class DSEPathConstraint(DSEEngine):
                 for start, stop in memory_to_add:
                     for address in range(start, stop + 1):
                         expr_mem = ExprMem(ExprInt(address,
-                                                   self.ir_arch.pc.size),
+                                                   self.lifter.pc.size),
                                            8)
                         value = self.eval_expr(expr_mem)
                         if not value.is_int():

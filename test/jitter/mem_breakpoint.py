@@ -5,6 +5,8 @@ from miasm.core.utils import decode_hex
 from miasm.analysis.machine import Machine
 from miasm.jitter.csts import PAGE_READ, PAGE_WRITE, \
     EXCEPT_BREAKPOINT_MEMORY, EXCEPT_ACCESS_VIOL
+from miasm.core.locationdb import LocationDB
+from miasm.jitter.jitload import JitterException
 
 def mem_breakpoint_handler(jitter):
     print("======")
@@ -35,7 +37,8 @@ def mem_breakpoint_handler(jitter):
     return True
 
 machine = Machine("aarch64l")
-jitter = machine.jitter(sys.argv[1])
+loc_db = LocationDB()
+jitter = machine.jitter(loc_db, sys.argv[1])
 
 start_addr = 0xFFFFFF8008080000
 end_addr = start_addr + 0x8000000
@@ -77,6 +80,6 @@ jitter.init_run(0xFFFFFF800901EBEC)
 
 try:
     jitter.continue_run()
-except AssertionError:
+except JitterException:
     assert jitter.vm.get_exception() == EXCEPT_ACCESS_VIOL
 

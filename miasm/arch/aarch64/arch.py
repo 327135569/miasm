@@ -12,7 +12,7 @@ from miasm.core.bin_stream import bin_stream
 from miasm.arch.aarch64 import regs as regs_module
 from miasm.arch.aarch64.regs import *
 from miasm.core.cpu import log as log_cpu
-from miasm.expression.modint import uint32, uint64, mod_size2int
+from miasm.core.modint import mod_size2int
 from miasm.core.asm_ast import AstInt, AstId, AstMem, AstOp
 
 log = logging.getLogger("aarch64dis")
@@ -156,6 +156,9 @@ reg_ext_off = (gpregz32_extend | gpregz64_extend)
 gpregs_32_64 = (gpregs32_info.parser | gpregs64_info.parser)
 gpregsz_32_64 = (gpregsz32_info.parser | gpregsz64_info.parser | base_expr)
 
+gpregs_32_64_nosp = (gpregs32_nosp_info.parser | gpregs64_nosp_info.parser)
+
+
 simdregs = (simd08_info.parser | simd16_info.parser | simd32_info.parser | simd64_info.parser)
 simdregs_h = (simd32_info.parser | simd64_info.parser | simd128_info.parser)
 
@@ -167,6 +170,11 @@ gpregs_info = {32: gpregs32_info,
 gpregsz_info = {32: gpregsz32_info,
                 64: gpregsz64_info}
 
+
+gpregs_nosp_info = {
+    32: gpregs32_nosp_info,
+    64: gpregs64_nosp_info
+}
 
 simds_info = {8: simd08_info,
               16: simd16_info,
@@ -535,6 +543,29 @@ class aarch64_gpreg_noarg(reg_noarg):
         if not self.expr.size in self.gpregs_info:
             return False
         if not self.expr in self.gpregs_info[self.expr.size].expr:
+            return False
+        self.value = self.gpregs_info[self.expr.size].expr.index(self.expr)
+        return True
+
+class aarch64_gpreg_noarg_nosp(aarch64_gpreg_noarg):
+    parser = gpregs_32_64_nosp
+    gpregs_info = gpregs_nosp_info
+
+    def decode(self, v):
+        size = 64 if self.parent.sf.value else 32
+        if v >= len(self.gpregs_info[size].expr):
+            return False
+        self.expr = self.gpregs_info[size].expr[v]
+        return True
+
+    def encode(self):
+        if not test_set_sf(self.parent, self.expr.size):
+            return False
+        if not self.expr.size in self.gpregs_info:
+            return False
+        if not self.expr in self.gpregs_info[self.expr.size].expr:
+            return False
+        if self.expr not in self.gpregs_info[self.expr.size].expr:
             return False
         self.value = self.gpregs_info[self.expr.size].expr.index(self.expr)
         return True
@@ -1666,6 +1697,8 @@ rmz = bs(l=5, cls=(aarch64_gpregz,), fname="rm")
 rnz = bs(l=5, cls=(aarch64_gpregz,), fname="rn")
 rdz = bs(l=5, cls=(aarch64_gpregz,), fname="rd")
 
+rd_nosp = bs(l=5, cls=(aarch64_gpreg_noarg_nosp, aarch64_arg), fname="rd")
+
 
 rn_n1 = bs(l=5, cls=(aarch64_gpreg_n1,), fname="rn")
 rm_n1 = bs(l=5, cls=(aarch64_gpreg_n1,), fname="rm")
@@ -1736,7 +1769,9 @@ simm6 = bs(l=6, cls=(aarch64_int64_noarg, aarch64_arg), fname="imm", order=-1)
 simm9 = bs(l=9, cls=(aarch64_int64_noarg,), fname="imm", order=-1)
 simm7 = bs(l=7, cls=(aarch64_int64_noarg,), fname="imm", order=-1)
 nzcv = bs(l=4, cls=(aarch64_uint64_noarg, aarch64_arg), fname="nzcv", order=-1)
+uimm4 = bs(l=4, cls=(aarch64_uint64_noarg, aarch64_arg), fname="imm", order=-1)
 uimm5 = bs(l=5, cls=(aarch64_uint64_noarg, aarch64_arg), fname="imm", order=-1)
+uimm6 = bs(l=6, cls=(aarch64_uint64_noarg, aarch64_arg), fname="imm", order=-1)
 uimm12 = bs(l=12, cls=(aarch64_uint64_noarg,), fname="imm", order=-1)
 uimm16 = bs(l=16, cls=(aarch64_uint64_noarg, aarch64_arg), fname="imm", order=-1)
 uimm7 = bs(l=7, cls=(aarch64_uint64_noarg,), fname="imm", order=-1)
@@ -1833,7 +1868,9 @@ aarch64op("adrp", [bs('1'), immlo, bs('10000'), immhip, rd64], [rd64, immhip])
 aarch64op("adr",  [bs('0'), immlo, bs('10000'), immhi, rd64], [rd64, immhi])
 
 # add/sub (reg shift)
-aarch64op("addsub", [sf, bs_adsu_name, modf, bs('01011'), shift, bs('0'), rm_sft, imm6, rn, rd], [rd, rn, rm_sft])
+aarch64op("addsub", [sf, bs_adsu_name, modf, bs('01011'), shift, bs('0'), rm_sft, imm6, rn, rd_nosp], [rd_nosp, rn, rm_sft])
+aarch64op("CMN", [sf, bs('0'), bs('1'), bs('01011'), shift, bs('0'), rm_sft, imm6, rn, bs('11111')], [rn, rm_sft])
+
 aarch64op("cmp", [sf, bs('1'), bs('1'), bs('01011'), shift, bs('0'), rm_sft, imm6, rn, bs('11111')], [rn, rm_sft], alias=True)
 # add/sub (reg ext)
 aarch64op("addsub", [sf, bs_adsu_name, modf, bs('01011'), bs('00'), bs('1'), rm_ext, option, imm3, rn, rd], [rd, rn, rm_ext])
@@ -2027,8 +2064,8 @@ bs_ldstp_name = bs_name(l=1, name=ldstp_name)
 aarch64op("ldstp", [sf, bs('0'), bs('101'), bs('0'), bs('0'), post_pre, bs('1'), bs_ldstp_name, simm7, rt2, rn64_deref_sf, rt], [rt, rt2, rn64_deref_sf])
 aarch64op("ldstp", [sf, bs('0'), bs('101'), bs('0'), bs('0'), bs('1'), bs('0'), bs_ldstp_name, simm7, rt2, rn64_deref_sf, rt], [rt, rt2, rn64_deref_sf])
 
-aarch64op("ldstp", [sdsize, bs('101'), bs('1'), bs('0'), post_pre, bs('1'), bs_ldstp_name, uimm7, sd2, rn64_deref_sd, sd1], [sd1, sd2, rn64_deref_sd])
-aarch64op("ldstp", [sdsize, bs('101'), bs('1'), bs('0'), bs('1'), bs('0'), bs_ldstp_name, uimm7, sd2, rn64_deref_sd, sd1], [sd1, sd2, rn64_deref_sd])
+aarch64op("ldstp", [sdsize, bs('101'), bs('1'), bs('0'), post_pre, bs('1'), bs_ldstp_name, simm7, sd2, rn64_deref_sd, sd1], [sd1, sd2, rn64_deref_sd])
+aarch64op("ldstp", [sdsize, bs('101'), bs('1'), bs('0'), bs('1'), bs('0'), bs_ldstp_name, simm7, sd2, rn64_deref_sd, sd1], [sd1, sd2, rn64_deref_sd])
 
 
 # data process p.207
@@ -2122,8 +2159,6 @@ aarch64op("msub",  [sf, bs('00'), bs('11011'), bs('000'), rm, bs('1'), ra, rn, r
 
 aarch64op("umulh", [bs('1'), bs('00'), bs('11011'), bs('110'), rm64, bs('0'), bs('11111'), rn64, rd64], [rd64, rn64, rm64])
 aarch64op("smulh", [bs('1'), bs('00'), bs('11011'), bs('010'), rm64, bs('0'), bs('11111'), rn64, rd64], [rd64, rn64, rm64])
-aarch64op("umsubh",[bs('1'), bs('00'), bs('11011'), bs('101'), rm32, bs('1'), ra64, rn32, rd64], [rd64, rn32, rm32, ra64])
-
 
 aarch64op("smaddl",[bs('1'), bs('00'), bs('11011'), bs('001'), rm32, bs('0'), ra64, rn32, rd64], [rd64, rn32, rm32, ra64])
 aarch64op("umaddl",[bs('1'), bs('00'), bs('11011'), bs('101'), rm32, bs('0'), ra64, rn32, rd64], [rd64, rn32, rm32, ra64])
@@ -2137,7 +2172,7 @@ aarch64op("udiv", [sf, bs('0'), bs('0'), bs('11010110'), rm, bs('00001'), bs('0'
 
 
 # extract register p.150
-aarch64op("extr", [sf, bs('00100111'), bs(l=1, cls=(aarch64_eq,), ref="sf"), bs('0'), rm, simm6, rn, rd], [rd, rn, rm, simm6])
+aarch64op("extr", [sf, bs('00100111'), bs(l=1, cls=(aarch64_eq,), ref="sf"), bs('0'), rm, uimm6, rn, rd], [rd, rn, rm, uimm6])
 
 # shift reg p.155
 shiftr_name = {'LSL': 0b00, 'LSR': 0b01, 'ASR': 0b10, 'ROR': 0b11}
@@ -2188,10 +2223,17 @@ aarch64op("stlxrb",[bs('0'), bs('0'), bs('001000'), bs('0'), bs('0'), bs('0'), r
 aarch64op("stlxrh",[bs('0'), bs('1'), bs('001000'), bs('0'), bs('0'), bs('0'), rs32, bs('1'), bs('11111'), rn64_deref_nooff, rt32], [rs32, rt32, rn64_deref_nooff])
 aarch64op("stlxp", [bs('1'), sf, bs('001000'), bs('0'), bs('0'), bs('1'), rs32, bs('1'), rt2, rn64_deref_nooff, rt], [rs32, rt, rt2, rn64_deref_nooff])
 
+aarch64op("stlrb",[bs('0'), bs('0'), bs('001000'), bs('1'), bs('0'), bs('0'), bs('11111'), bs('1'), bs('11111'), rn64_deref_nooff, rt32], [rt32, rn64_deref_nooff])
+
 # barriers p.135
 aarch64op("dsb", [bs('1101010100'), bs('0000110011'), crm, bs('1'), bs('00'), bs('11111')], [crm])
 aarch64op("dmb", [bs('1101010100'), bs('0000110011'), crm, bs('1'), bs('01'), bs('11111')], [crm])
 aarch64op("isb", [bs('1101010100'), bs('0000110011'), crm, bs('1'), bs('10'), bs('11111')], [crm])
+aarch64op("ic",  [bs('1101010100'), bs('0'), bs('01'), op1, bs('0111'), crm, op2, rt64], [op1, crm, op2, rt64])
+aarch64op('clrex', [bs('1101010100'), bs('0'), bs('00'), bs('011'), bs('0011'), uimm4, bs('010'), bs('11111')], [uimm4])
+aarch64op("tlbi", [bs('1101010100'), bs('0'), bs('01'), op1, bs('1000'), crm, op2, rt64], [op1, crm, op2, rt64])
+aarch64op('yield', [bs('1101010100'), bs('0'), bs('00'), bs('011'), bs('0010'), bs('0000'), bs('001'), bs('11111')], [])
+
 
 stacctype = bs_mod_name(l=1, fname='order', mn_mod=['', 'L'])
 ltacctype = bs_mod_name(l=1, fname='order', mn_mod=['', 'A'])

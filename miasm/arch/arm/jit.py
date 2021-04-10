@@ -2,9 +2,8 @@ from builtins import range
 import logging
 
 from miasm.jitter.jitload import Jitter, named_arguments
-from miasm.core.locationdb import LocationDB
 from miasm.core.utils import pck32, upck32
-from miasm.arch.arm.sem import ir_armb, ir_arml, ir_armtl, ir_armtb, cond_dct_inv, tab_cond
+from miasm.arch.arm.sem import Lifter_Armb, Lifter_Arml, Lifter_Armtl, Lifter_Armtb, cond_dct_inv, tab_cond
 from miasm.jitter.codegen import CGen
 from miasm.expression.expression import ExprId, ExprAssign, ExprCond
 from miasm.ir.ir import IRBlock, AssignBlock
@@ -34,23 +33,14 @@ class arm_CGen(CGen):
 
             if instr.name.startswith("IT"):
                 assignments = []
-                label = self.ir_arch.get_loc_key_for_instr(instr)
+                label = self.lifter.get_instr_label(instr)
                 irblocks = []
-                index, irblocks = self.ir_arch.do_it_block(label, index, block, assignments, True)
-
-                for irblock_l in irblocks:
-                    out = []
-
-                    for irblock in irblock_l:
-                        new_irblock = irblock.simplify(expr_simp_high_to_explicit)[1]
-                        out.append(new_irblock)
-                    irblock_l = out
-
-                    irblocks_list.append(irblock_l)
+                index, irblocks = self.lifter.do_it_block(label, index, block, assignments, True)
+                irblocks_list += irblocks
                 continue
 
 
-            assignblk_head, assignblks_extra = self.ir_arch.instr2ir(instr)
+            assignblk_head, assignblks_extra = self.lifter.instr2ir(instr)
             # Keep result in ordered list as first element is the assignblk head
             # The remainings order is not really important
             irblock_head = self.assignblk_to_irbloc(instr, assignblk_head)
@@ -74,9 +64,8 @@ class arm_CGen(CGen):
 class jitter_arml(Jitter):
     C_Gen = arm_CGen
 
-    def __init__(self, *args, **kwargs):
-        sp = LocationDB()
-        Jitter.__init__(self, ir_arml(sp), *args, **kwargs)
+    def __init__(self, loc_db, *args, **kwargs):
+        Jitter.__init__(self, Lifter_Arml(loc_db), *args, **kwargs)
         self.vm.set_little_endian()
 
     def push_uint32_t(self, value):
@@ -142,16 +131,14 @@ class jitter_arml(Jitter):
 class jitter_armb(jitter_arml):
     C_Gen = arm_CGen
 
-    def __init__(self, *args, **kwargs):
-        sp = LocationDB()
-        Jitter.__init__(self, ir_armb(sp), *args, **kwargs)
+    def __init__(self, loc_db, *args, **kwargs):
+        Jitter.__init__(self, Lifter_Armb(loc_db), *args, **kwargs)
         self.vm.set_big_endian()
 
 
 class jitter_armtl(jitter_arml):
     C_Gen = arm_CGen
 
-    def __init__(self, *args, **kwargs):
-        sp = LocationDB()
-        Jitter.__init__(self, ir_armtl(sp), *args, **kwargs)
+    def __init__(self, loc_db, *args, **kwargs):
+        Jitter.__init__(self, Lifter_Armtl(loc_db), *args, **kwargs)
         self.vm.set_little_endian()

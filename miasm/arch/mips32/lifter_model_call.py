@@ -2,12 +2,12 @@
 
 from miasm.expression.expression import ExprAssign, ExprOp
 from miasm.ir.ir import IRBlock, AssignBlock
-from miasm.ir.analysis import ira
-from miasm.arch.mips32.sem import ir_mips32l, ir_mips32b
+from miasm.ir.analysis import LifterModelCall
+from miasm.arch.mips32.sem import Lifter_Mips32l, Lifter_Mips32b
 
-class ir_a_mips32l(ir_mips32l, ira):
-    def __init__(self, loc_db=None):
-        ir_mips32l.__init__(self, loc_db)
+class LifterModelCallMips32l(Lifter_Mips32l, LifterModelCall):
+    def __init__(self, loc_db):
+        Lifter_Mips32l.__init__(self, loc_db)
         self.ret_reg = self.arch.regs.V0
 
     def call_effects(self, ad, instr):
@@ -67,11 +67,11 @@ class ir_a_mips32l(ir_mips32l, ira):
                 ir_blocks_all, gen_pc_updt
             )
             if split:
-                ir_blocks_all.append(IRBlock(loc_key, assignments))
+                ir_blocks_all.append(IRBlock(self.loc_db, loc_key, assignments))
                 loc_key = None
                 assignments = []
         if loc_key is not None:
-            ir_blocks_all.append(IRBlock(loc_key, assignments))
+            ir_blocks_all.append(IRBlock(self.loc_db, loc_key, assignments))
 
         new_ir_blocks_all = self.post_add_asmblock_to_ircfg(block, ircfg, ir_blocks_all)
         for irblock in new_ir_blocks_all:
@@ -98,7 +98,7 @@ class ir_a_mips32l(ir_mips32l, ira):
 
 
 
-class ir_a_mips32b(ir_mips32b, ir_a_mips32l):
-    def __init__(self, loc_db=None):
-        ir_mips32b.__init__(self, loc_db)
+class LifterModelCallMips32b(Lifter_Mips32b, LifterModelCallMips32l):
+    def __init__(self, loc_db):
+        Lifter_Mips32b.__init__(self, loc_db)
         self.ret_reg = self.arch.regs.V0

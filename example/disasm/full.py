@@ -15,6 +15,7 @@ from miasm.expression.simplifications import expr_simp
 from miasm.analysis.ssa import SSADiGraph
 from miasm.ir.ir import AssignBlock, IRBlock
 from miasm.analysis.simplifier import IRCFGSimplifierCommon, IRCFGSimplifierSSA
+from miasm.core.locationdb import LocationDB
 
 log = logging.getLogger("dis")
 console_handler = logging.StreamHandler()
@@ -75,13 +76,20 @@ args = parser.parse_args()
 if args.verbose:
     log_asmblock.setLevel(logging.DEBUG)
 
+loc_db = LocationDB()
 log.info('Load binary')
 if args.rawbinary:
-    cont = Container.fallback_container(open(args.filename, "rb").read(),
-                                        vm=None, addr=args.base_address)
+    cont = Container.fallback_container(
+        open(args.filename, "rb").read(),
+        vm=None, addr=args.base_address,
+        loc_db=loc_db,
+    )
 else:
     with open(args.filename, "rb") as fdesc:
-        cont = Container.from_stream(fdesc, addr=args.base_address)
+        cont = Container.from_stream(
+            fdesc, addr=args.base_address,
+            loc_db=loc_db,
+        )
 
 default_addr = cont.entry_point
 bs = cont.bin_stream
@@ -98,7 +106,6 @@ if not arch:
 # Instance the arch-dependent machine
 machine = Machine(arch)
 mn, dis_engine = machine.mn, machine.dis_engine
-ira, ir = machine.ira, machine.ir
 log.info('ok')
 
 mdis = dis_engine(bs, loc_db=cont.loc_db)
@@ -207,9 +214,9 @@ if args.propagexpr:
     args.gen_ir = True
 
 
-class IRADelModCallStack(ira):
+class LifterDelModCallStack(machine.lifter_model_call):
         def call_effects(self, addr, instr):
-            assignblks, extra = super(IRADelModCallStack, self).call_effects(addr, instr)
+            assignblks, extra = super(LifterDelModCallStack, self).call_effects(addr, instr)
             if not args.calldontmodstack:
                 return assignblks, extra
             out = []
@@ -224,56 +231,53 @@ class IRADelModCallStack(ira):
 
 # Bonus, generate IR graph
 if args.gen_ir:
-    log.info("generating IR and IR analysis")
+    log.info("Lift and Lift with modeled calls")
 
-    ir_arch = ir(mdis.loc_db)
-    ir_arch_a = IRADelModCallStack(mdis.loc_db)
+    lifter = machine.lifter(mdis.loc_db)
+    lifter_model_call = LifterDelModCallStack(mdis.loc_db)
 
-    ircfg = ir_arch.new_ircfg()
-    ircfg_a = ir_arch.new_ircfg()
-
-    ir_arch.blocks = {}
-    ir_arch_a.blocks = {}
+    ircfg = lifter.new_ircfg()
+    ircfg_model_call = lifter.new_ircfg()
 
     head = list(entry_points)[0]
 
     for ad, asmcfg in viewitems(all_funcs_blocks):
         log.info("generating IR... %x" % ad)
         for block in asmcfg.blocks:
-            ir_arch.add_asmblock_to_ircfg(block, ircfg)
-            ir_arch_a.add_asmblock_to_ircfg(block, ircfg_a)
+            lifter.add_asmblock_to_ircfg(block, ircfg)
+            lifter_model_call.add_asmblock_to_ircfg(block, ircfg_model_call)
 
     log.info("Print blocks (without analyse)")
-    for label, block in viewitems(ir_arch.blocks):
+    for label, block in viewitems(ircfg.blocks):
         print(block)
 
     log.info("Gen Graph... %x" % ad)
 
     log.info("Print blocks (with analyse)")
-    for label, block in viewitems(ir_arch_a.blocks):
+    for label, block in viewitems(ircfg_model_call.blocks):
         print(block)
 
     if args.simplify > 0:
         log.info("Simplify...")
-        ircfg_simplifier = IRCFGSimplifierCommon(ir_arch_a)
-        ircfg_simplifier.simplify(ircfg_a, head)
+        ircfg_simplifier = IRCFGSimplifierCommon(lifter_model_call)
+        ircfg_simplifier.simplify(ircfg_model_call, head)
         log.info("ok...")
 
     if args.defuse:
-        reachings = ReachingDefinitions(ircfg_a)
+        reachings = ReachingDefinitions(ircfg_model_call)
         open('graph_defuse.dot', 'w').write(DiGraphDefUse(reachings).dot())
 
     out = ircfg.dot()
     open('graph_irflow_raw.dot', 'w').write(out)
-    out = ircfg_a.dot()
+    out = ircfg_model_call.dot()
     open('graph_irflow.dot', 'w').write(out)
 
     if args.ssa and not args.propagexpr:
         if len(entry_points) != 1:
             raise RuntimeError("Your graph should have only one head")
-        ssa = SSADiGraph(ircfg_a)
+        ssa = SSADiGraph(ircfg_model_call)
         ssa.transform(head)
-        open("ssa.dot", "w").write(ircfg_a.dot())
+        open("ssa.dot", "w").write(ircfg_model_call.dot())
 
 
 if args.propagexpr:
@@ -304,12 +308,12 @@ if args.propagexpr:
             ssa = self.do_simplify_loop(ssa, head)
             ircfg = self.ssa_to_unssa(ssa, head)
 
-            ircfg_simplifier = IRCFGSimplifierCommon(self.ir_arch)
+            ircfg_simplifier = IRCFGSimplifierCommon(self.lifter)
             ircfg_simplifier.deadremoval.add_expr_to_original_expr(ssa.ssa_variable_to_expr)
             ircfg_simplifier.simplify(ircfg, head)
             return ircfg
 
     head = list(entry_points)[0]
-    simplifier = CustomIRCFGSimplifierSSA(ir_arch_a)
-    ircfg = simplifier.simplify(ircfg_a, head)
+    simplifier = CustomIRCFGSimplifierSSA(lifter_model_call)
+    ircfg = simplifier.simplify(ircfg_model_call, head)
     open('final.dot', 'w').write(ircfg.dot())
