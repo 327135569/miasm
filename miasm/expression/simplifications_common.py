@@ -71,28 +71,34 @@ def simp_cst_propagation(e_s, expr):
                 shifter = int(int2) % int2.size
                 out = (int(int1) << shifter) | (int(int1) >> (int2.size - shifter))
             elif op_name == '/':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 out = int(int1) // int(int2)
             elif op_name == '%':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 out = int(int1) % int(int2)
             elif op_name == 'sdiv':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 tmp1 = mod_size2int[int1.size](int(int1))
                 tmp2 = mod_size2int[int2.size](int(int2))
                 out = mod_size2uint[int1.size](tmp1 // tmp2)
             elif op_name == 'smod':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 tmp1 = mod_size2int[int1.size](int(int1))
                 tmp2 = mod_size2int[int2.size](int(int2))
                 out = mod_size2uint[int1.size](tmp1 % tmp2)
             elif op_name == 'umod':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 tmp1 = mod_size2uint[int1.size](int(int1))
                 tmp2 = mod_size2uint[int2.size](int(int2))
                 out = mod_size2uint[int1.size](tmp1 % tmp2)
             elif op_name == 'udiv':
-                assert int(int2), "division by 0"
+                if int(int2) == 0:
+                    return expr
                 tmp1 = mod_size2uint[int1.size](int(int1))
                 tmp2 = mod_size2uint[int2.size](int(int2))
                 out = mod_size2uint[int1.size](tmp1 // tmp2)
@@ -853,6 +859,17 @@ def simp_cc_conds(_, expr):
             ExprInt(1, expr.size)
         )
 
+    elif (expr.is_op("CC_S>=") and
+          len(expr.args) == 2 and
+          expr.args[0].is_op("FLAG_SIGN_SUB") and
+          expr.args[0].args[1].is_int(0) and
+          expr.args[1].is_int(0)):
+        expr = ExprOp(
+            TOK_INF_EQUAL_SIGNED,
+            expr.args[0].args[1],
+            expr.args[0].args[0],
+        )
+
     elif (expr.is_op("CC_S<") and
           test_cc_eq_args(
               expr,
@@ -947,6 +964,18 @@ def simp_cond_cc_flag(expr_simp, expr):
     if expr_op.op == "CC_U>=":
         return ExprCond(arg, expr.src2, expr.src1)
     return expr
+
+def simp_cond_sub_cf(expr_simp, expr):
+    """
+    ExprCond(FLAG_SUB_CF(A, B), X, Y) => ExprCond(A <u B, X, Y)
+    """
+    if not expr.is_cond():
+        return expr
+    if not expr.cond.is_op("FLAG_SUB_CF"):
+        return expr
+    cond = ExprOp(TOK_INF_UNSIGNED, *expr.cond.args)
+    return ExprCond(cond, expr.src1, expr.src2)
+
 
 def simp_cmp_int(expr_simp, expr):
     """

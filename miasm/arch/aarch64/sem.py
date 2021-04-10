@@ -3,7 +3,7 @@ from future.utils import viewitems
 
 from miasm.expression.expression import ExprId, ExprInt, ExprLoc, ExprMem, \
     ExprCond, ExprCompose, ExprOp, ExprAssign
-from miasm.ir.ir import IntermediateRepresentation, IRBlock, AssignBlock
+from miasm.ir.ir import Lifter, IRBlock, AssignBlock
 from miasm.arch.aarch64.arch import mn_aarch64, conds_expr, replace_regs
 from miasm.arch.aarch64.regs import *
 from miasm.core.sembuilder import SemBuilder
@@ -1270,7 +1270,10 @@ def get_mem_access(mem):
     updt = None
     if isinstance(mem, ExprOp):
         if mem.op == 'preinc':
-            addr = mem.args[0] + mem.args[1]
+            if len(mem.args) == 1:
+                addr = mem.args[0]
+            else:
+                addr = mem.args[0] + mem.args[1]
         elif mem.op == 'segm':
             base = mem.args[0]
             op, (reg, shift) = mem.args[1].op, mem.args[1].args
@@ -2206,11 +2209,13 @@ mnemo_func.update({
     'ldrsh': ldrsh,
     'ldrsw': ldrsw,
 
+    'ldar': ldr, # TODO memory barrier
     'ldarb': ldrb,
 
     'ldaxrb': ldaxrb,
     'stlxrb': stlxrb,
 
+    'stlr': l_str, # TODO memory barrier
     'stlrb': stlrb,
 
     'stlxr': stlxr,
@@ -2285,10 +2290,10 @@ class aarch64info(object):
     # offset
 
 
-class ir_aarch64l(IntermediateRepresentation):
+class Lifter_Aarch64l(Lifter):
 
     def __init__(self, loc_db):
-        IntermediateRepresentation.__init__(self, mn_aarch64, "l", loc_db)
+        Lifter.__init__(self, mn_aarch64, "l", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 64)
@@ -2371,10 +2376,10 @@ class ir_aarch64l(IntermediateRepresentation):
         return instr_ir, new_irblocks
 
 
-class ir_aarch64b(ir_aarch64l):
+class Lifter_Aarch64b(Lifter_Aarch64l):
 
     def __init__(self, loc_db):
-        IntermediateRepresentation.__init__(self, mn_aarch64, "b", loc_db)
+        Lifter.__init__(self, mn_aarch64, "b", loc_db)
         self.pc = PC
         self.sp = SP
         self.IRDst = ExprId('IRDst', 64)

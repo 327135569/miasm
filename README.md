@@ -91,7 +91,7 @@ Using `Machine` abstraction:
 XOR        ESI, DWORD PTR [EAX]
 ```
 
-For Mips:
+For MIPS:
 ```pycon
 >>> mn = Machine('mips32b').mn
 >>> print(mn.dis(b'\x97\xa3\x00 ', "b"))
@@ -111,15 +111,15 @@ ADD        R2, R8, R0
 
 Create an intermediate representation object:
 ```pycon
->>> ira = machine.ira(loc_db)
+>>> lifter = machine.lifter_model_call(loc_db)
 ```
-Create an empty ircfg
+Create an empty ircfg:
 ```pycon
->>> ircfg = ira.new_ircfg()
+>>> ircfg = lifter.new_ircfg()
 ```
 Add instruction to the pool:
 ```pycon
->>> ira.add_instr_to_ircfg(instr, ircfg)
+>>> lifter.add_instr_to_ircfg(instr, ircfg)
 ```
 
 Print current pool:
@@ -205,7 +205,7 @@ MOV        EAX, EBX
 RET
 ```
 
-Initializing the Jit engine with a stack:
+Initializing the JIT engine with a stack:
 
 ```pycon
 >>> jitter = machine.jitter(loc_db, jit_type='python')
@@ -284,15 +284,15 @@ Symbolic execution
 Initializing the IR pool:
 
 ```pycon
->>> ira = machine.ira(loc_db)
->>> ircfg = ira.new_ircfg_from_asmcfg(asmcfg)
+>>> lifter = machine.lifter_model_call(loc_db)
+>>> ircfg = lifter.new_ircfg_from_asmcfg(asmcfg)
 ```
 
 Initializing the engine with default symbolic values:
 
 ```pycon
 >>> from miasm.ir.symbexec import SymbolicExecutionEngine
->>> sb = SymbolicExecutionEngine(ira)
+>>> sb = SymbolicExecutionEngine(lifter)
 ```
 
 Launching the execution:
@@ -306,7 +306,7 @@ Launching the execution:
 Same, with step logs (only changes are displayed):
 
 ```pycon
->>> sb = SymbolicExecutionEngine(ira, machine.mn.regs.regs_init)
+>>> sb = SymbolicExecutionEngine(lifter, machine.mn.regs.regs_init)
 >>> symbolic_pc = sb.run_at(ircfg, 0, step=True)
 Instr LEA        ECX, DWORD PTR [ECX + 0x4]
 Assignblk:
@@ -597,10 +597,10 @@ They already use Miasm
 Tools
 -----
 
-* [Sibyl](https://github.com/cea-sec/Sibyl): A function divination too
+* [Sibyl](https://github.com/cea-sec/Sibyl): A function divination tool
 * [R2M2](https://github.com/guedou/r2m2): Use miasm as a radare2 plugin
-* [CGrex](https://github.com/mechaphish/cgrex) : Targeted patcher for CGC binaries
-* [ethRE](https://github.com/jbcayrou/ethRE) Reversing tool for Ethereum EVM (with corresponding Miasm2 architecture)
+* [CGrex](https://github.com/mechaphish/cgrex): Targeted patcher for CGC binaries
+* [ethRE](https://github.com/jbcayrou/ethRE): Reversing tool for Ethereum EVM (with corresponding Miasm2 architecture)
 
 Blog posts / papers / conferences
 ---------------------------------
